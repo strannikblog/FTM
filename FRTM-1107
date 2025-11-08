@@ -80,8 +80,6 @@ input string inpSLExecuteSoundFile = "alert.wav";            // Sound File Name
 
 //--- Break-Even - Auto Execution
 input group "===== Break-Even - Auto Execution ====="
-input bool inpAutoMoveToBE_Partial = false;                 // Auto Move SL to BE (Partial Exits)
-input int inpBETriggerLevel = 1;                            // BE Trigger at TP Level (1, 2, or 3)
 input bool inpUseBETriggerLine = false;                     // Use BE Trigger Line (Manual BE Trigger)
 input double inpBEOffsetPips = 0.0;                         // BE Offset (pips above/below entry)
 input bool inpAutoExecuteAtBE = false;                      // Auto Execute at BE Line (Risk-Free Exit)
@@ -380,8 +378,8 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void ManageBreakEven()
 {
-   // Exit if all BE features are disabled
-   if(!inpAutoMoveToBE_Partial && !inpUseBETriggerLine)
+   // Exit if BE Trigger Line is disabled
+   if(!inpUseBETriggerLine)
       return;
 
    // Loop through all positions
@@ -405,40 +403,21 @@ void ManageBreakEven()
       bool useConservative = (StringFind(comment, "_CONS") >= 0);
       RiskCalculation calc = useConservative ? g_ConservativeCalc : g_IdealCalc;
 
-      double triggerPrice = 0.0;
+      // Check if BE Trigger Line is set
+      if(g_BETriggerPriceRuntime <= 0)
+         continue;
+
+      double triggerPrice = g_BETriggerPriceRuntime;
       bool shouldMoveToBE = false;
 
-      // ===== BE TRIGGER LINE MODE (Manual trigger price) =====
-      if(inpUseBETriggerLine && g_BETriggerPriceRuntime > 0)
-      {
-         triggerPrice = g_BETriggerPriceRuntime;
-
-         // Check if price has reached trigger
-         if(posType == POSITION_TYPE_BUY)
-            shouldMoveToBE = (SymbolInfoDouble(_Symbol, SYMBOL_BID) >= triggerPrice);
-         else
-            shouldMoveToBE = (SymbolInfoDouble(_Symbol, SYMBOL_ASK) <= triggerPrice);
-      }
-      // ===== PARTIAL EXITS MODE (TP Level trigger) =====
-      else if(inpAutoMoveToBE_Partial)
-      {
-         // Determine trigger price based on level
-         if(inpBETriggerLevel == 1)
-            triggerPrice = calc.partialTP1Price;
-         else if(inpBETriggerLevel == 2)
-            triggerPrice = calc.partialTP2Price;
-         else if(inpBETriggerLevel == 3)
-            triggerPrice = calc.partialTP3Price;
-
-         // Check if price has reached trigger
-         if(posType == POSITION_TYPE_BUY)
-            shouldMoveToBE = (SymbolInfoDouble(_Symbol, SYMBOL_BID) >= triggerPrice);
-         else
-            shouldMoveToBE = (SymbolInfoDouble(_Symbol, SYMBOL_ASK) <= triggerPrice);
-      }
+      // Check if price has reached trigger
+      if(posType == POSITION_TYPE_BUY)
+         shouldMoveToBE = (SymbolInfoDouble(_Symbol, SYMBOL_BID) >= triggerPrice);
+      else
+         shouldMoveToBE = (SymbolInfoDouble(_Symbol, SYMBOL_ASK) <= triggerPrice);
 
       // If trigger reached, move SL to break-even
-      if(shouldMoveToBE && triggerPrice > 0)
+      if(shouldMoveToBE)
       {
          // Get actual position parameters
          double actualEntry = PositionGetDouble(POSITION_PRICE_OPEN);
@@ -880,6 +859,7 @@ void ManageTrailingStop()
       ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
       string comment = PositionGetString(POSITION_COMMENT);
       double currentSL = PositionGetDouble(POSITION_SL);
+      double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
 
       // Determine which calculation to use based on comment
       bool useConservative = (StringFind(comment, "_CONS") >= 0);
@@ -889,23 +869,23 @@ void ManageTrailingStop()
       double newSL = 0;
       int levelToTrail = 0;
 
-      // Check if TP1 has been hit and we should move SL to TP1 (or TP2 if more aggressive)
+      // Trailing Stop Logic: Move SL to PREVIOUS level when NEXT level is hit
+      // TP1 hit → Move SL to BE (breakeven/entry price)
       if(HasExecutedTPLevel(ticket, 1) && !HasExecutedTPLevel(ticket, 2))
       {
-         // TP1 executed, move SL to TP1 price
+         newSL = entryPrice;
+         levelToTrail = 0; // 0 = BE
+      }
+      // TP2 hit → Move SL to TP1 price
+      else if(HasExecutedTPLevel(ticket, 2) && !HasExecutedTPLevel(ticket, 3) && inpNumberOfLevels >= 2)
+      {
          newSL = calc.partialTP1Price;
          levelToTrail = 1;
       }
-      // Check if TP2 has been hit and we should move SL to TP2
-      else if(HasExecutedTPLevel(ticket, 2) && !HasExecutedTPLevel(ticket, 3) && inpNumberOfLevels == 3)
-      {
-         // TP2 executed, move SL to TP2 price
-         newSL = calc.partialTP2Price;
-         levelToTrail = 2;
-      }
+      // Note: If TP3 is hit, position is fully closed (100%), so no SL adjustment needed
 
       // Execute SL modification if needed
-      if(newSL > 0 && levelToTrail > 0)
+      if(newSL > 0 && levelToTrail >= 0)
       {
          // Check if we haven't already moved SL to this level
          double tolerance = g_Point * 5; // 5 point tolerance
@@ -919,17 +899,18 @@ void ManageTrailingStop()
             // Modify position SL
             if(trade.PositionModify(ticket, newSL, 0))
             {
-               Print("OK Trailing Stop: Moved SL to TP", levelToTrail, " price ", DoubleToString(newSL, g_Digits), " for Ticket #", ticket);
+               string levelName = (levelToTrail == 0) ? "BE" : "TP" + IntegerToString(levelToTrail);
+               Print("OK Trailing Stop: Moved SL to ", levelName, " price ", DoubleToString(newSL, g_Digits), " for Ticket #", ticket);
 
                // Send notifications
                if(inpBEEnableAlert)
-                  Alert("Trailing Stop: SL moved to TP", levelToTrail, " for ", _Symbol, " Ticket #", ticket);
+                  Alert("Trailing Stop: SL moved to ", levelName, " for ", _Symbol, " Ticket #", ticket);
 
                if(inpBEEnableSound)
                   PlaySound(inpBESoundFile);
 
                if(inpBEEnablePush)
-                  SendNotification("Trailing Stop: SL moved to TP" + IntegerToString(levelToTrail) + " for " + _Symbol + " Ticket: " + IntegerToString(ticket));
+                  SendNotification("Trailing Stop: SL moved to " + levelName + " for " + _Symbol + " Ticket: " + IntegerToString(ticket));
             }
             else
             {
@@ -2959,8 +2940,6 @@ void SaveToSetFile()
    FileWriteString(fileHandle, "inpUseBETriggerLine=" + (inpUseBETriggerLine ? "1" : "0") + "||Y\n");
    FileWriteString(fileHandle, "inpBEOffsetPips=" + DoubleToString(inpBEOffsetPips, 2) + "||Y\n");
    FileWriteString(fileHandle, "inpTrailSLToNextTP=" + (inpTrailSLToNextTP ? "1" : "0") + "||Y\n");
-   FileWriteString(fileHandle, "inpAutoMoveToBE_Partial=" + (inpAutoMoveToBE_Partial ? "1" : "0") + "||Y\n");
-   FileWriteString(fileHandle, "inpBETriggerLevel=" + IntegerToString(inpBETriggerLevel) + "||Y\n");
    FileWriteString(fileHandle, "inpBEEnableAlert=" + (inpBEEnableAlert ? "1" : "0") + "||Y\n");
    FileWriteString(fileHandle, "inpBEEnableSound=" + (inpBEEnableSound ? "1" : "0") + "||Y\n");
    FileWriteString(fileHandle, "inpBEEnablePush=" + (inpBEEnablePush ? "1" : "0") + "||Y\n");
