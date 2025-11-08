@@ -82,8 +82,10 @@ input string inpSLExecuteSoundFile = "alert.wav";            // Sound File Name
 input group "===== Break-Even - Auto Execution ====="
 input bool inpAutoMoveToBE_Partial = false;                 // Auto Move SL to BE (Partial Exits)
 input int inpBETriggerLevel = 1;                            // BE Trigger at TP Level (1, 2, or 3)
+input bool inpUseBETriggerLine = false;                     // Use BE Trigger Line (Manual BE Trigger)
 input double inpBEOffsetPips = 0.0;                         // BE Offset (pips above/below entry)
 input bool inpAutoExecuteAtBE = false;                      // Auto Execute at BE Line (Risk-Free Exit)
+input bool inpTrailSLToNextTP = false;                      // Trail SL to Next TP Level When Hit
 input bool inpBEEnableAlert = true;                         // Enable Alert Notification
 input bool inpBEEnableSound = true;                         // Enable Sound Notification
 input bool inpBEEnablePush = true;                          // Enable Push Notification
@@ -378,8 +380,8 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void ManageBreakEven()
 {
-   // Exit if BE feature is disabled
-   if(!inpAutoMoveToBE_Partial)
+   // Exit if all BE features are disabled
+   if(!inpAutoMoveToBE_Partial && !inpUseBETriggerLine)
       return;
 
    // Loop through all positions
@@ -406,20 +408,34 @@ void ManageBreakEven()
       double triggerPrice = 0.0;
       bool shouldMoveToBE = false;
 
-      // ===== PARTIAL EXITS MODE =====
-      // Determine trigger price based on level
-      if(inpBETriggerLevel == 1)
-         triggerPrice = calc.partialTP1Price;
-      else if(inpBETriggerLevel == 2)
-         triggerPrice = calc.partialTP2Price;
-      else if(inpBETriggerLevel == 3)
-         triggerPrice = calc.partialTP3Price;
+      // ===== BE TRIGGER LINE MODE (Manual trigger price) =====
+      if(inpUseBETriggerLine && g_BETriggerPriceRuntime > 0)
+      {
+         triggerPrice = g_BETriggerPriceRuntime;
 
-      // Check if price has reached trigger
-      if(posType == POSITION_TYPE_BUY)
-         shouldMoveToBE = (SymbolInfoDouble(_Symbol, SYMBOL_BID) >= triggerPrice);
-      else
-         shouldMoveToBE = (SymbolInfoDouble(_Symbol, SYMBOL_ASK) <= triggerPrice);
+         // Check if price has reached trigger
+         if(posType == POSITION_TYPE_BUY)
+            shouldMoveToBE = (SymbolInfoDouble(_Symbol, SYMBOL_BID) >= triggerPrice);
+         else
+            shouldMoveToBE = (SymbolInfoDouble(_Symbol, SYMBOL_ASK) <= triggerPrice);
+      }
+      // ===== PARTIAL EXITS MODE (TP Level trigger) =====
+      else if(inpAutoMoveToBE_Partial)
+      {
+         // Determine trigger price based on level
+         if(inpBETriggerLevel == 1)
+            triggerPrice = calc.partialTP1Price;
+         else if(inpBETriggerLevel == 2)
+            triggerPrice = calc.partialTP2Price;
+         else if(inpBETriggerLevel == 3)
+            triggerPrice = calc.partialTP3Price;
+
+         // Check if price has reached trigger
+         if(posType == POSITION_TYPE_BUY)
+            shouldMoveToBE = (SymbolInfoDouble(_Symbol, SYMBOL_BID) >= triggerPrice);
+         else
+            shouldMoveToBE = (SymbolInfoDouble(_Symbol, SYMBOL_ASK) <= triggerPrice);
+      }
 
       // If trigger reached, move SL to break-even
       if(shouldMoveToBE && triggerPrice > 0)
@@ -842,6 +858,89 @@ void ManageBELineExecution()
 }
 
 //+------------------------------------------------------------------+
+//| Manage Trailing Stop (Move SL to Next TP Level)                  |
+//+------------------------------------------------------------------+
+void ManageTrailingStop()
+{
+   // Exit if trailing stop is disabled
+   if(!inpTrailSLToNextTP)
+      return;
+
+   // Loop through all positions
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket <= 0) continue;
+
+      // Filter: only process positions for this symbol and magic number
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != 123456) continue;
+
+      // Get position details
+      ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+      string comment = PositionGetString(POSITION_COMMENT);
+      double currentSL = PositionGetDouble(POSITION_SL);
+
+      // Determine which calculation to use based on comment
+      bool useConservative = (StringFind(comment, "_CONS") >= 0);
+      RiskCalculation calc = useConservative ? g_ConservativeCalc : g_IdealCalc;
+
+      double currentPrice = (posType == POSITION_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      double newSL = 0;
+      int levelToTrail = 0;
+
+      // Check if TP1 has been hit and we should move SL to TP1 (or TP2 if more aggressive)
+      if(HasExecutedTPLevel(ticket, 1) && !HasExecutedTPLevel(ticket, 2))
+      {
+         // TP1 executed, move SL to TP1 price
+         newSL = calc.partialTP1Price;
+         levelToTrail = 1;
+      }
+      // Check if TP2 has been hit and we should move SL to TP2
+      else if(HasExecutedTPLevel(ticket, 2) && !HasExecutedTPLevel(ticket, 3) && inpNumberOfLevels == 3)
+      {
+         // TP2 executed, move SL to TP2 price
+         newSL = calc.partialTP2Price;
+         levelToTrail = 2;
+      }
+
+      // Execute SL modification if needed
+      if(newSL > 0 && levelToTrail > 0)
+      {
+         // Check if we haven't already moved SL to this level
+         double tolerance = g_Point * 5; // 5 point tolerance
+         bool slAlreadyMoved = MathAbs(currentSL - newSL) < tolerance;
+
+         if(!slAlreadyMoved)
+         {
+            // Normalize SL price
+            newSL = NormalizeDouble(newSL, g_Digits);
+
+            // Modify position SL
+            if(trade.PositionModify(ticket, newSL, 0))
+            {
+               Print("OK Trailing Stop: Moved SL to TP", levelToTrail, " price ", DoubleToString(newSL, g_Digits), " for Ticket #", ticket);
+
+               // Send notifications
+               if(inpBEEnableAlert)
+                  Alert("Trailing Stop: SL moved to TP", levelToTrail, " for ", _Symbol, " Ticket #", ticket);
+
+               if(inpBEEnableSound)
+                  PlaySound(inpBESoundFile);
+
+               if(inpBEEnablePush)
+                  SendNotification("Trailing Stop: SL moved to TP" + IntegerToString(levelToTrail) + " for " + _Symbol + " Ticket: " + IntegerToString(ticket));
+            }
+            else
+            {
+               Print("✗ Failed to trail SL for Ticket #", ticket, " - Error: ", trade.ResultRetcodeDescription());
+            }
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
 //| Manage Partial TP Execution Automation                           |
 //+------------------------------------------------------------------+
 void ManagePartialTPExecution()
@@ -1008,6 +1107,7 @@ void OnTick()
    ManageStopLossExecution();
    ManageBELineExecution();
    ManagePartialTPExecution();
+   ManageTrailingStop();
 }
 
 //+------------------------------------------------------------------+
@@ -1315,6 +1415,34 @@ void OnChartEvent(const int id,
             SaveSettingsToFile();
 
          Print("OK TP3 dragged to: ", DoubleToString(calc.partialTP3Price, g_Digits), " (", DoubleToString(calc.partialPips3, 1), " pips, RR: ", DoubleToString(rr3, 2), ")");
+      }
+      // BE Trigger Line dragged
+      else if(sparam == g_BETriggerLineName && inpUseBETriggerLine)
+      {
+         double newPrice = ObjectGetDouble(0, g_BETriggerLineName, OBJPROP_PRICE, 0);
+
+         // Normalize to tick size
+         double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+         newPrice = NormalizeDouble(MathRound(newPrice / tickSize) * tickSize, g_Digits);
+
+         // Update the line to normalized price
+         datetime currentTime = TimeCurrent();
+         datetime futureTime = currentTime + PeriodSeconds(PERIOD_CURRENT) * 100;
+         ObjectMove(0, g_BETriggerLineName, 0, currentTime, newPrice);
+         ObjectMove(0, g_BETriggerLineName, 1, futureTime, newPrice);
+
+         // Update runtime variable
+         g_BETriggerPriceRuntime = newPrice;
+
+         // Update line label
+         ObjectSetString(0, g_BETriggerLineName, OBJPROP_TEXT, "BE Trigger: " + DoubleToString(newPrice, _Digits));
+         UpdateLabelPosition(g_BETriggerLabelName, g_BETriggerPriceRuntime, "BE Trigger");
+
+         // Auto-save global variables
+         if(inpExportDirectory != "")
+            SaveSettingsToFile();
+
+         Print("OK BE Trigger line dragged to: ", DoubleToString(newPrice, g_Digits));
       }
    }
 }
@@ -2604,6 +2732,44 @@ void UpdateLines()
          ObjectMove(0, g_EntryLineName, 1, futureTime, calc.entryPrice);
       }
    }
+
+   // BE Trigger Price Line (Manual BE Trigger)
+   if(inpUseBETriggerLine && g_BETriggerPriceRuntime > 0)
+   {
+      if(ObjectFind(0, g_BETriggerLineName) < 0)
+      {
+         ObjectCreate(0, g_BETriggerLineName, OBJ_TREND, 0, currentTime, g_BETriggerPriceRuntime, futureTime, g_BETriggerPriceRuntime);
+         ObjectSetInteger(0, g_BETriggerLineName, OBJPROP_COLOR, clrGold);
+         ObjectSetInteger(0, g_BETriggerLineName, OBJPROP_WIDTH, 2);
+         ObjectSetInteger(0, g_BETriggerLineName, OBJPROP_STYLE, STYLE_DASHDOT);
+         ObjectSetInteger(0, g_BETriggerLineName, OBJPROP_RAY_RIGHT, true);
+         ObjectSetInteger(0, g_BETriggerLineName, OBJPROP_SELECTABLE, true);
+         ObjectSetString(0, g_BETriggerLineName, OBJPROP_TEXT, "BE Trigger: " + DoubleToString(g_BETriggerPriceRuntime, _Digits));
+      }
+      else
+      {
+         ObjectMove(0, g_BETriggerLineName, 0, currentTime, g_BETriggerPriceRuntime);
+         ObjectMove(0, g_BETriggerLineName, 1, futureTime, g_BETriggerPriceRuntime);
+         ObjectSetString(0, g_BETriggerLineName, OBJPROP_TEXT, "BE Trigger: " + DoubleToString(g_BETriggerPriceRuntime, _Digits));
+      }
+
+      // Draw BE Trigger Label
+      if(ObjectFind(0, g_BETriggerLabelName) < 0)
+      {
+         ObjectCreate(0, g_BETriggerLabelName, OBJ_TEXT, 0, currentTime, g_BETriggerPriceRuntime);
+         ObjectSetInteger(0, g_BETriggerLabelName, OBJPROP_COLOR, clrGold);
+         ObjectSetInteger(0, g_BETriggerLabelName, OBJPROP_FONTSIZE, 8);
+      }
+      UpdateLabelPosition(g_BETriggerLabelName, g_BETriggerPriceRuntime, "BE Trigger");
+   }
+   else
+   {
+      // Delete BE Trigger line if it exists but shouldn't be shown
+      if(ObjectFind(0, g_BETriggerLineName) >= 0)
+         ObjectDelete(0, g_BETriggerLineName);
+      if(ObjectFind(0, g_BETriggerLabelName) >= 0)
+         ObjectDelete(0, g_BETriggerLabelName);
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -2615,12 +2781,14 @@ void DeleteLines()
    ObjectDelete(0, g_TPLineName);
    ObjectDelete(0, g_EntryLineName);
    ObjectDelete(0, g_BELineName);
+   ObjectDelete(0, g_BETriggerLineName);
    ObjectDelete(0, g_PartialTP1LineName);
    ObjectDelete(0, g_PartialTP2LineName);
    ObjectDelete(0, g_PartialTP3LineName);
    // Delete all TP line labels
    ObjectDelete(0, g_SLLabelName);
    ObjectDelete(0, g_TPLabelName);
+   ObjectDelete(0, g_BETriggerLabelName);
    ObjectDelete(0, g_PartialTP1LabelName);
    ObjectDelete(0, g_PartialTP2LabelName);
    ObjectDelete(0, g_PartialTP3LabelName);
@@ -2791,7 +2959,9 @@ void SaveToSetFile()
    // Trade Management
    FileWriteString(fileHandle, "inpTradeManagementMode=" + (inpTradeManagementMode ? "1" : "0") + "||Y\n");
    FileWriteString(fileHandle, "inpPlaceSLTP=" + (inpPlaceSLTP ? "1" : "0") + "||Y\n");
+   FileWriteString(fileHandle, "inpUseBETriggerLine=" + (inpUseBETriggerLine ? "1" : "0") + "||Y\n");
    FileWriteString(fileHandle, "inpBEOffsetPips=" + DoubleToString(inpBEOffsetPips, 2) + "||Y\n");
+   FileWriteString(fileHandle, "inpTrailSLToNextTP=" + (inpTrailSLToNextTP ? "1" : "0") + "||Y\n");
    FileWriteString(fileHandle, "inpAutoMoveToBE_Partial=" + (inpAutoMoveToBE_Partial ? "1" : "0") + "||Y\n");
    FileWriteString(fileHandle, "inpBETriggerLevel=" + IntegerToString(inpBETriggerLevel) + "||Y\n");
    FileWriteString(fileHandle, "inpBEEnableAlert=" + (inpBEEnableAlert ? "1" : "0") + "||Y\n");
