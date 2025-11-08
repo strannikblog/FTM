@@ -95,7 +95,7 @@ input string inpBESoundFile = "alert.wav";                  // Sound File Name
 //--- Take Profit Settings
 input group "===== Take Profit Settings ====="
 input bool inpShowTP = true;                                // Show Take Profit Lines
-input int inpNumberOfLevels = 3;                            // Number of Exit Levels (2 or 3)
+input int inpNumberOfLevels = 3;                            // Number of Exit Levels (1, 2, or 3)
 input double inpExitPercent1 = 50.0;                        // Exit % at Level 1
 input double inpExitPercent2 = 30.0;                        // Exit % at Level 2
 
@@ -1909,13 +1909,14 @@ void DeleteButtons()
 //+------------------------------------------------------------------+
 void CalculatePartialExits(RiskCalculation &calc, double pipValuePerLot, bool isLongTrade)
 {
-   // Calculate exit percentages
+   // Calculate exit percentages based on number of levels
+   double exitPercent2 = (inpNumberOfLevels >= 2) ? inpExitPercent2 : 0;
    double exitPercent3 = (inpNumberOfLevels == 3) ? (100 - inpExitPercent1 - inpExitPercent2) : 0;
    if(exitPercent3 < 0) exitPercent3 = 0;
 
    // Calculate lot sizes for each level
    calc.partialLots1 = calc.lotSize * (inpExitPercent1 / 100.0);
-   calc.partialLots2 = calc.lotSize * (inpExitPercent2 / 100.0);
+   calc.partialLots2 = (inpNumberOfLevels >= 2) ? calc.lotSize * (exitPercent2 / 100.0) : 0;
    calc.partialLots3 = (inpNumberOfLevels == 3) ? calc.lotSize * (exitPercent3 / 100.0) : 0;
 
    // Always use draggable lines - Use global variables if set, otherwise use reasonable defaults
@@ -1930,15 +1931,22 @@ void CalculatePartialExits(RiskCalculation &calc, double pipValuePerLot, bool is
       calc.partialTP1Price = isLongTrade ? (calc.entryPrice + (tp1Pips * g_PipValue)) : (calc.entryPrice - (tp1Pips * g_PipValue));
    }
 
-   if(g_PartialTP2Price > 0)
+   if(inpNumberOfLevels >= 2)
    {
-      calc.partialTP2Price = g_PartialTP2Price;
+      if(g_PartialTP2Price > 0)
+      {
+         calc.partialTP2Price = g_PartialTP2Price;
+      }
+      else
+      {
+         // Default: 1.5x SL distance
+         double tp2Pips = calc.slPips * 1.5;
+         calc.partialTP2Price = isLongTrade ? (calc.entryPrice + (tp2Pips * g_PipValue)) : (calc.entryPrice - (tp2Pips * g_PipValue));
+      }
    }
    else
    {
-      // Default: 1.5x SL distance
-      double tp2Pips = calc.slPips * 1.5;
-      calc.partialTP2Price = isLongTrade ? (calc.entryPrice + (tp2Pips * g_PipValue)) : (calc.entryPrice - (tp2Pips * g_PipValue));
+      calc.partialTP2Price = 0;
    }
 
    if(inpNumberOfLevels == 3)
@@ -1963,43 +1971,47 @@ void CalculatePartialExits(RiskCalculation &calc, double pipValuePerLot, bool is
    if(isLongTrade)
    {
       calc.partialPips1 = (calc.partialTP1Price - calc.entryPrice) / g_PipValue;
-      calc.partialPips2 = (calc.partialTP2Price - calc.entryPrice) / g_PipValue;
+      calc.partialPips2 = (inpNumberOfLevels >= 2) ? (calc.partialTP2Price - calc.entryPrice) / g_PipValue : 0;
       calc.partialPips3 = (inpNumberOfLevels == 3) ? (calc.partialTP3Price - calc.entryPrice) / g_PipValue : 0;
    }
    else
    {
       calc.partialPips1 = (calc.entryPrice - calc.partialTP1Price) / g_PipValue;
-      calc.partialPips2 = (calc.entryPrice - calc.partialTP2Price) / g_PipValue;
+      calc.partialPips2 = (inpNumberOfLevels >= 2) ? (calc.entryPrice - calc.partialTP2Price) / g_PipValue : 0;
       calc.partialPips3 = (inpNumberOfLevels == 3) ? (calc.entryPrice - calc.partialTP3Price) / g_PipValue : 0;
    }
 
    // Calculate P&L for manual levels
    double totalFees = (calc.lotSize * inpCommissionPerLot) + (calc.lotSize * inpExitSlippage * pipValuePerLot);
    double partialFees1 = totalFees * (inpExitPercent1 / 100.0);
-   double partialFees2 = totalFees * (inpExitPercent2 / 100.0);
+   double partialFees2 = (inpNumberOfLevels >= 2) ? totalFees * (exitPercent2 / 100.0) : 0;
    double partialFees3 = (inpNumberOfLevels == 3) ? totalFees * (exitPercent3 / 100.0) : 0;
 
    double partialGrossPnL1 = calc.partialLots1 * calc.partialPips1 * pipValuePerLot;
-   double partialGrossPnL2 = calc.partialLots2 * calc.partialPips2 * pipValuePerLot;
+   double partialGrossPnL2 = (inpNumberOfLevels >= 2) ? calc.partialLots2 * calc.partialPips2 * pipValuePerLot : 0;
    double partialGrossPnL3 = (inpNumberOfLevels == 3) ? calc.partialLots3 * calc.partialPips3 * pipValuePerLot : 0;
 
    calc.partialNetPnL1 = partialGrossPnL1 - partialFees1;
-   calc.partialNetPnL2 = partialGrossPnL2 - partialFees2;
+   calc.partialNetPnL2 = (inpNumberOfLevels >= 2) ? partialGrossPnL2 - partialFees2 : 0;
    calc.partialNetPnL3 = (inpNumberOfLevels == 3) ? partialGrossPnL3 - partialFees3 : 0;
 
    calc.partialTotalNetPnL = (inpNumberOfLevels == 3) ?
       (calc.partialNetPnL1 + calc.partialNetPnL2 + calc.partialNetPnL3) :
-      (calc.partialNetPnL1 + calc.partialNetPnL2);
+      (inpNumberOfLevels == 2) ?
+      (calc.partialNetPnL1 + calc.partialNetPnL2) :
+      calc.partialNetPnL1;
 
    // Pip distance calculations (based on gross profit)
    double dollarPerPip = calc.lotSize * pipValuePerLot;
    calc.partialPipDistance1 = (dollarPerPip > 0) ? (partialGrossPnL1 / dollarPerPip) : 0;
-   calc.partialPipDistance2 = (dollarPerPip > 0) ? (partialGrossPnL2 / dollarPerPip) : 0;
+   calc.partialPipDistance2 = (inpNumberOfLevels >= 2 && dollarPerPip > 0) ? (partialGrossPnL2 / dollarPerPip) : 0;
    calc.partialPipDistance3 = (inpNumberOfLevels == 3 && dollarPerPip > 0) ? (partialGrossPnL3 / dollarPerPip) : 0;
 
    double totalGrossPnL = (inpNumberOfLevels == 3) ?
       (partialGrossPnL1 + partialGrossPnL2 + partialGrossPnL3) :
-      (partialGrossPnL1 + partialGrossPnL2);
+      (inpNumberOfLevels == 2) ?
+      (partialGrossPnL1 + partialGrossPnL2) :
+      partialGrossPnL1;
    calc.partialTotalPipDistance = (dollarPerPip > 0) ? (totalGrossPnL / dollarPerPip) : 0;
 }
 
@@ -2087,21 +2099,24 @@ void ExecuteBuyOrder()
             allLimitsPlaced = false;
          }
 
-         // TP2
-         double tp2Lots = NormalizeDouble(calc.partialLots2, 2);
-         if(tp2Lots < minLot) tp2Lots = minLot;
-         if(tp2Lots > maxLot) tp2Lots = maxLot;
-         tp2Lots = MathFloor(tp2Lots / lotStep) * lotStep;
-
-         double tp2Price = NormalizeDouble(calc.partialTP2Price, g_Digits);
-         bool tp2Result = trade.OrderOpen(_Symbol, ORDER_TYPE_SELL_LIMIT, tp2Lots, 0, tp2Price, 0, 0, ORDER_TIME_GTC, 0, "TP2 @ " + DoubleToString(calc.partialPips2, 1) + " pips");
-
-         if(tp2Result)
-            Print("TP2 SELL_LIMIT placed: ", tp2Lots, " lots @ ", tp2Price);
-         else
+         // TP2 (if 2 or more levels)
+         if(inpNumberOfLevels >= 2)
          {
-            Print("TP2 SELL_LIMIT failed: ", trade.ResultRetcodeDescription());
-            allLimitsPlaced = false;
+            double tp2Lots = NormalizeDouble(calc.partialLots2, 2);
+            if(tp2Lots < minLot) tp2Lots = minLot;
+            if(tp2Lots > maxLot) tp2Lots = maxLot;
+            tp2Lots = MathFloor(tp2Lots / lotStep) * lotStep;
+
+            double tp2Price = NormalizeDouble(calc.partialTP2Price, g_Digits);
+            bool tp2Result = trade.OrderOpen(_Symbol, ORDER_TYPE_SELL_LIMIT, tp2Lots, 0, tp2Price, 0, 0, ORDER_TIME_GTC, 0, "TP2 @ " + DoubleToString(calc.partialPips2, 1) + " pips");
+
+            if(tp2Result)
+               Print("TP2 SELL_LIMIT placed: ", tp2Lots, " lots @ ", tp2Price);
+            else
+            {
+               Print("TP2 SELL_LIMIT failed: ", trade.ResultRetcodeDescription());
+               allLimitsPlaced = false;
+            }
          }
 
          // TP3 (if enabled)
@@ -2214,21 +2229,24 @@ void ExecuteSellOrder()
             allLimitsPlaced = false;
          }
 
-         // TP2
-         double tp2Lots = NormalizeDouble(calc.partialLots2, 2);
-         if(tp2Lots < minLot) tp2Lots = minLot;
-         if(tp2Lots > maxLot) tp2Lots = maxLot;
-         tp2Lots = MathFloor(tp2Lots / lotStep) * lotStep;
-
-         double tp2Price = NormalizeDouble(calc.partialTP2Price, g_Digits);
-         bool tp2Result = trade.OrderOpen(_Symbol, ORDER_TYPE_BUY_LIMIT, tp2Lots, 0, tp2Price, 0, 0, ORDER_TIME_GTC, 0, "TP2 @ " + DoubleToString(calc.partialPips2, 1) + " pips");
-
-         if(tp2Result)
-            Print("TP2 BUY_LIMIT placed: ", tp2Lots, " lots @ ", tp2Price);
-         else
+         // TP2 (if 2 or more levels)
+         if(inpNumberOfLevels >= 2)
          {
-            Print("TP2 BUY_LIMIT failed: ", trade.ResultRetcodeDescription());
-            allLimitsPlaced = false;
+            double tp2Lots = NormalizeDouble(calc.partialLots2, 2);
+            if(tp2Lots < minLot) tp2Lots = minLot;
+            if(tp2Lots > maxLot) tp2Lots = maxLot;
+            tp2Lots = MathFloor(tp2Lots / lotStep) * lotStep;
+
+            double tp2Price = NormalizeDouble(calc.partialTP2Price, g_Digits);
+            bool tp2Result = trade.OrderOpen(_Symbol, ORDER_TYPE_BUY_LIMIT, tp2Lots, 0, tp2Price, 0, 0, ORDER_TIME_GTC, 0, "TP2 @ " + DoubleToString(calc.partialPips2, 1) + " pips");
+
+            if(tp2Result)
+               Print("TP2 BUY_LIMIT placed: ", tp2Lots, " lots @ ", tp2Price);
+            else
+            {
+               Print("TP2 BUY_LIMIT failed: ", trade.ResultRetcodeDescription());
+               allLimitsPlaced = false;
+            }
          }
 
          // TP3 (if enabled)
@@ -2586,48 +2604,51 @@ void UpdateLines()
          ObjectSetInteger(0, g_PartialTP1LabelName, OBJPROP_FONTSIZE, 8);
       }
       UpdateLabelPosition(g_PartialTP1LabelName, calc.partialTP1Price, tp1Label);
-      
-      // Level 2
-      if(ObjectFind(0, g_PartialTP2LineName) < 0)
+
+      // Level 2 (if 2 or more levels)
+      if(inpNumberOfLevels >= 2)
       {
-         ObjectCreate(0, g_PartialTP2LineName, OBJ_TREND, 0, currentTime, calc.partialTP2Price, futureTime, calc.partialTP2Price);
-         ObjectSetInteger(0, g_PartialTP2LineName, OBJPROP_COLOR, inpTPLineColor);
-         ObjectSetInteger(0, g_PartialTP2LineName, OBJPROP_WIDTH, 2);
-         ObjectSetInteger(0, g_PartialTP2LineName, OBJPROP_STYLE, STYLE_SOLID);
-         ObjectSetInteger(0, g_PartialTP2LineName, OBJPROP_RAY_RIGHT, true);
-         ObjectSetString(0, g_PartialTP2LineName, OBJPROP_TEXT, "TP2: " + DoubleToString(inpExitPercent2, 0) + "% @ +" + DoubleToString(calc.partialPips2, 1) + " pips");
-      }
-      else
-      {
-         ObjectMove(0, g_PartialTP2LineName, 0, currentTime, calc.partialTP2Price);
-         ObjectMove(0, g_PartialTP2LineName, 1, futureTime, calc.partialTP2Price);
-         ObjectSetString(0, g_PartialTP2LineName, OBJPROP_TEXT, "TP2: " + DoubleToString(inpExitPercent2, 0) + "% @ +" + DoubleToString(calc.partialPips2, 1) + " pips");
+         if(ObjectFind(0, g_PartialTP2LineName) < 0)
+         {
+            ObjectCreate(0, g_PartialTP2LineName, OBJ_TREND, 0, currentTime, calc.partialTP2Price, futureTime, calc.partialTP2Price);
+            ObjectSetInteger(0, g_PartialTP2LineName, OBJPROP_COLOR, inpTPLineColor);
+            ObjectSetInteger(0, g_PartialTP2LineName, OBJPROP_WIDTH, 2);
+            ObjectSetInteger(0, g_PartialTP2LineName, OBJPROP_STYLE, STYLE_SOLID);
+            ObjectSetInteger(0, g_PartialTP2LineName, OBJPROP_RAY_RIGHT, true);
+            ObjectSetString(0, g_PartialTP2LineName, OBJPROP_TEXT, "TP2: " + DoubleToString(inpExitPercent2, 0) + "% @ +" + DoubleToString(calc.partialPips2, 1) + " pips");
+         }
+         else
+         {
+            ObjectMove(0, g_PartialTP2LineName, 0, currentTime, calc.partialTP2Price);
+            ObjectMove(0, g_PartialTP2LineName, 1, futureTime, calc.partialTP2Price);
+            ObjectSetString(0, g_PartialTP2LineName, OBJPROP_TEXT, "TP2: " + DoubleToString(inpExitPercent2, 0) + "% @ +" + DoubleToString(calc.partialPips2, 1) + " pips");
+         }
+
+         // Make line always draggable
+         ObjectSetInteger(0, g_PartialTP2LineName, OBJPROP_SELECTABLE, true);
+
+         // Add text label for TP2
+         double rr2 = (slPips > 0) ? (calc.partialPips2 / slPips) : 0;
+         string tp2Label = "TP2: " + DoubleToString(inpExitPercent2, 0) + "% @ " + DoubleToString(calc.partialPips2, 1) + " pips";
+         if(inpMetricDisplay == METRIC_RR)
+         {
+            if(rr2 > 0) tp2Label += " | RR: " + DoubleToString(rr2, 2);
+         }
+         else // METRIC_PIP_DISTANCE
+         {
+            tp2Label += " | Pip Dist.: " + DoubleToString(calc.partialPipDistance2, 1);
+         }
+         tp2Label += " | Net: $" + DoubleToString(calc.partialNetPnL2, 2);
+
+         if(ObjectFind(0, g_PartialTP2LabelName) < 0)
+         {
+            ObjectCreate(0, g_PartialTP2LabelName, OBJ_TEXT, 0, TimeCurrent(), calc.partialTP2Price);
+            ObjectSetInteger(0, g_PartialTP2LabelName, OBJPROP_COLOR, inpTPLineColor);
+            ObjectSetInteger(0, g_PartialTP2LabelName, OBJPROP_FONTSIZE, 8);
+         }
+         UpdateLabelPosition(g_PartialTP2LabelName, calc.partialTP2Price, tp2Label);
       }
 
-      // Make line always draggable
-      ObjectSetInteger(0, g_PartialTP2LineName, OBJPROP_SELECTABLE, true);
-
-      // Add text label for TP2
-      double rr2 = (slPips > 0) ? (calc.partialPips2 / slPips) : 0;
-      string tp2Label = "TP2: " + DoubleToString(inpExitPercent2, 0) + "% @ " + DoubleToString(calc.partialPips2, 1) + " pips";
-      if(inpMetricDisplay == METRIC_RR)
-      {
-         if(rr2 > 0) tp2Label += " | RR: " + DoubleToString(rr2, 2);
-      }
-      else // METRIC_PIP_DISTANCE
-      {
-         tp2Label += " | Pip Dist.: " + DoubleToString(calc.partialPipDistance2, 1);
-      }
-      tp2Label += " | Net: $" + DoubleToString(calc.partialNetPnL2, 2);
-
-      if(ObjectFind(0, g_PartialTP2LabelName) < 0)
-      {
-         ObjectCreate(0, g_PartialTP2LabelName, OBJ_TEXT, 0, TimeCurrent(), calc.partialTP2Price);
-         ObjectSetInteger(0, g_PartialTP2LabelName, OBJPROP_COLOR, inpTPLineColor);
-         ObjectSetInteger(0, g_PartialTP2LabelName, OBJPROP_FONTSIZE, 8);
-      }
-      UpdateLabelPosition(g_PartialTP2LabelName, calc.partialTP2Price, tp2Label);
-      
       // Level 3 (if enabled)
       if(inpNumberOfLevels == 3)
       {
