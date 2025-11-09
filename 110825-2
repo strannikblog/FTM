@@ -1,0 +1,3344 @@
+//+------------------------------------------------------------------+
+//|                                           ForexRiskManager.mq5    |
+//|                                  Risk Management & Lot Calculator |
+//|                                                                    |
+//+------------------------------------------------------------------+
+#property copyright "Forex Risk Manager"
+#property link      ""
+#property version   "1.18"
+#property description "Risk Management EA with Lot Size Calculator"
+#property description "Ideal & Conservative Modes | One-Click Execution"
+#property description "Resizable Panel + Trade Management + Email Alerts"
+
+//--- Include libraries
+#include <Trade\Trade.mqh>
+CTrade trade;
+
+//+------------------------------------------------------------------+
+//| Enumerations - MUST BE BEFORE INPUTS                            |
+//+------------------------------------------------------------------+
+enum ENUM_PIP_MODE
+{
+   PIP_AUTO,           // Auto Calculate
+   PIP_MANUAL          // Manual Entry
+};
+
+enum ENUM_SL_MODE
+{
+   SL_MANUAL,          // Manual (Fixed Pips)
+   SL_DYNAMIC,         // Dynamic (to Price Level)
+   SL_HYBRID           // Hybrid (Reference + Dynamic)
+};
+
+enum ENUM_DISPLAY_MODE
+{
+   DISPLAY_IDEAL,           // Ideal (No Entry Slippage)
+   DISPLAY_CONSERVATIVE     // Conservative (With Entry Slippage)
+};
+
+enum ENUM_TRADE_DIR
+{
+   TRADE_AUTO,   // Auto-Detect (from TP position)
+   TRADE_BUY,    // Buy (Long)
+   TRADE_SELL    // Sell (Short)
+};
+
+enum ENUM_LABEL_POSITION
+{
+   LABEL_RIGHT,      // Right of line
+   LABEL_ABOVE,      // Above line
+   LABEL_BELOW       // Below line
+};
+
+enum ENUM_EXECUTION_MODE
+{
+   EXECUTE_BIDASK,   // Bid/Ask (Realistic - Accounts for Spread)
+   EXECUTE_VISUAL    // Visual (Uses close[0] - Matches Price Line)
+};
+
+//+------------------------------------------------------------------+
+//| Input Parameters                                                  |
+//+------------------------------------------------------------------+
+
+//--- Trade Management Mode
+input group "===== Trade Management ====="
+input bool inpTradeManagementMode = false;                  // Trade Management Mode (Hide Planning Lines)
+input bool inpPlaceSLTP = true;                             // Place SL/TP with Orders
+input ENUM_EXECUTION_MODE inpExecutionMode = EXECUTE_BIDASK; // Auto-Execution Mode (All Features)
+
+//--- Take Profit Settings
+input group "===== Take Profit Settings ====="
+input bool inpShowTP = true;                                // Show Take Profit Lines
+input int inpNumberOfLevels = 3;                            // Number of Exit Levels (1, 2, or 3)
+input double inpExitPercent1 = 50.0;                        // Exit % at Level 1
+input double inpExitPercent2 = 30.0;                        // Exit % at Level 2
+
+//--- Stop Loss Settings
+input group "===== Stop Loss Settings ====="
+input ENUM_SL_MODE inpSLMode = SL_MANUAL;                    // Stop Loss Mode
+input double inpManualSLPips = 15.0;                         // Manual Stop Loss (pips)
+input ENUM_TRADE_DIR inpTradeDirection = TRADE_AUTO;         // Trade Direction (Manual SL Mode)
+
+//--- Break-Even - Auto Execution
+input group "===== Break-Even - Auto Execution ====="
+input bool inpUseBETriggerLine = false;                     // Use BE Trigger Line (Manual BE Trigger)
+input double inpBEOffsetPips = 0.0;                         // BE Offset (pips above/below entry)
+input bool inpTrailSLToNextTP = false;                      // Trail SL to Next TP Level
+input bool inpAutoExecuteAtBE = false;                      // Auto Execute at BE Line (Risk-Free Exit)
+input bool inpBEEnableAlert = true;                         // Enable Alert Notification
+input bool inpBEEnableSound = true;                         // Enable Sound Notification
+input bool inpBEEnablePush = true;                          // Enable Push Notification
+input bool inpBEExecuteEnableEmail = false;                 // Enable Email Notification (BE Line Hit)
+input bool inpEmailAlertBETriggered = false;                // Email Alert: Break-Even Triggered
+input bool inpEmailAlertSLMovedToBE = false;                // Email Alert: SL Moved to BE Line
+input string inpBESoundFile = "alert.wav";                  // Sound File Name
+
+//--- Stop Loss - Auto Execution
+input group "===== Stop Loss - Auto Execution ====="
+input bool inpAutoExecuteSL = false;                         // Auto Execute at Stop Loss
+input bool inpSLExecuteEnableAlert = true;                   // Enable Alert Notification
+input bool inpSLExecuteEnableSound = true;                   // Enable Sound Notification
+input bool inpSLExecuteEnablePush = true;                    // Enable Push Notification
+input bool inpSLExecuteEnableEmail = false;                  // Enable Email Notification
+input string inpSLExecuteSoundFile = "alert.wav";            // Sound File Name
+
+//--- Take Profit - Auto Execution
+input group "===== Take Profit - Auto Execution ====="
+input bool inpAutoExecuteTP1 = false;                       // Auto Execute at TP1
+input bool inpAutoExecuteTP2 = false;                       // Auto Execute at TP2
+input bool inpAutoExecuteTP3 = false;                       // Auto Execute at TP3
+input bool inpTPExecuteEnableAlert = true;                  // Enable Alert Notification
+input bool inpTPExecuteEnableSound = true;                  // Enable Sound Notification
+input bool inpTPExecuteEnablePush = true;                   // Enable Push Notification
+input bool inpTPExecuteEnableEmail = false;                 // Enable Email Notification
+input string inpTPExecuteSoundFile = "alert.wav";           // Sound File Name
+
+//--- Account & Risk Settings
+input group "===== Account & Risk Settings ====="
+input double inpAccountSize = 100000;                       // Account Size (USD)
+input double inpRiskPercent = 0.25;                         // Risk % per Trade
+input double inpMarginPercent = 3.0;                        // Margin Requirement %
+input double inpCommissionPerLot = 5.0;                     // Commission per Lot (Round-turn USD)
+input ENUM_PIP_MODE inpPipValueMode = PIP_AUTO;            // Pip Value Mode
+input double inpManualPipValue = 10.0;                      // Manual Pip Value (USD per lot)
+input bool inpShowPipValue = true;                          // Show Pip Value in Panel
+
+//--- Entry & Exit Slippage Settings
+input group "===== Entry & Exit Slippage ====="
+input double inpEntrySlippage = 0.2;                        // Expected Entry Slippage (pips)
+input double inpExitSlippage = 0.1;                         // Expected Exit Slippage (pips)
+input ENUM_DISPLAY_MODE inpDisplayMode = DISPLAY_CONSERVATIVE; // Display Mode
+input bool inpShowAlternateLotSize = false;                 // Show Alternate Lot Size
+
+//--- Display Settings
+input group "===== Display Settings ====="
+input bool inpShowPanel = true;                             // Show Information Panel
+input bool inpShowLines = true;                             // Show Reference Lines
+input bool inpShowEntryLine = true;                         // Show Entry Line
+input bool inpShowReturnOnMargin = false;                   // Show Return on Margin
+
+input group "===== Panel Position & Size ====="
+input int inpPanelX = 20;                                   // Panel X Position
+input int inpPanelY = 80;                                   // Panel Y Position
+input int inpPanelWidth = 260;                              // Panel Width (pixels)
+input int inpPanelHeight = 490;                             // Panel Height (0 = Auto)
+input int inpPanelPadding = 10;                             // Panel Internal Padding (pixels)
+input int inpRowHeight = 18;                                // Row Height (pixels)
+input int inpDividerLength = 26;                            // Divider Length (number of dashes)
+input int inpFontSizeBold = 9;                              // Font Size (Bold Labels)
+input int inpFontSizeNormal = 8;                            // Font Size (Normal Text)
+
+input group "===== Panel Colors ====="
+input color inpPanelBgColor = clrWhite;                     // Panel Background Color
+input color inpPanelTextColor = C'100,100,100';             // Panel Text Color
+input color inpSLLineColor = clrCrimson;                    // Stop Loss Line Color
+input color inpTPLineColor = clrSeaGreen;                   // Take Profit Line Color
+input color inpEntryLineColor = clrDeepPink;                // Entry Line Color
+input color inpBELineColor = clrOrange;                     // Break-even Line Color
+input ENUM_LABEL_POSITION inpLabelPosition = LABEL_ABOVE;   // Label Position (Dynamic Mode)
+
+//--- Button Settings
+input group "===== Button Settings ====="
+input int inpButtonWidth = 125;                             // Button Width
+input int inpButtonHeight = 30;                             // Button Height
+input int inpButtonSpacing = 10;                            // Button Spacing Below Panel (pixels)
+input color inpBuyButtonColor = clrSteelBlue;               // Buy Button Color
+input color inpSellButtonColor = clrSeaGreen;               // Sell Button Color
+input color inpMoveToBEButtonColor = clrDarkOrange;         // Breakeven Button Color
+input color inpCloseAllButtonColor = clrBrown;              // Close All Button Color
+
+//--- File Export
+input group "===== File Export ====="
+input string inpExportDirectory = "EA";                      // Export Directory (in Common\\Files\\)
+
+//+------------------------------------------------------------------+
+//| Global Variables                                                  |
+//+------------------------------------------------------------------+
+string g_PanelName = "RiskPanel";
+string g_BuyButtonName = "BuyButton";
+string g_SellButtonName = "SellButton";
+string g_MoveToBEButtonName = "MoveToBEButton";
+string g_CloseAllButtonName = "CloseAllButton";
+string g_SLLineName = "SLLine";
+string g_SLRefLineName = "SLRefLine";           // Reference SL line for Hybrid mode
+string g_TPLineName = "TPLine";
+string g_EntryLineName = "EntryLine";
+string g_BELineName = "BELine";
+string g_BETriggerLineName = "BETriggerLine";
+string g_PartialTP1LineName = "PartialTP1Line";
+string g_PartialTP2LineName = "PartialTP2Line";
+string g_PartialTP3LineName = "PartialTP3Line";
+string g_SLLabelName = "SLLine_Label";          // Text label for draggable SL
+string g_TPLabelName = "TPLine_Label";          // Text label for TP
+string g_PartialTP1LabelName = "PartialTP1Line_Label";  // Text label for Partial TP1
+string g_PartialTP2LabelName = "PartialTP2Line_Label";  // Text label for Partial TP2
+string g_PartialTP3LabelName = "PartialTP3Line_Label";  // Text label for Partial TP3
+string g_BETriggerLabelName = "BETriggerLine_Label";    // Text label for BE Trigger line
+
+double g_PointValue;
+double g_PipValue;
+int g_Digits;
+double g_Point;
+
+// Runtime prices for draggable lines (updated when lines are dragged, synced via settings file)
+double g_BETriggerPriceRuntime = 0;  // BE Trigger Price
+double g_DynamicSLPrice = 0;         // Dynamic SL Line Price
+double g_ReferenceSLPrice = 0;       // Reference SL Line Price (Hybrid mode)
+double g_DynamicTPPrice = 0;         // Dynamic TP Line Price
+double g_PartialTP1Price = 0;        // Partial TP1 Line Price
+double g_PartialTP2Price = 0;        // Partial TP2 Line Price
+double g_PartialTP3Price = 0;        // Partial TP3 Line Price
+
+// Runtime TP settings (synced via settings file)
+int g_NumberOfLevels = 0;            // Number of TP levels (1, 2, or 3) - 0 means use input parameter
+double g_ExitPercent1 = 0;           // Exit % at Level 1 - 0 means use input parameter
+double g_ExitPercent2 = 0;           // Exit % at Level 2 - 0 means use input parameter
+double g_PartialLots1 = 0;           // Absolute lot size for TP1 - 0 means recalculate
+double g_PartialLots2 = 0;           // Absolute lot size for TP2 - 0 means recalculate
+double g_PartialLots3 = 0;           // Absolute lot size for TP3 - 0 means recalculate
+
+// Settings file sync tracking
+datetime g_LastFileModifyTime = 0;  // Track last file modification time for auto-reload
+bool g_IsReloadingFromFile = false;  // Prevent circular saves during file reload
+
+// Position tracking for email alerts
+ulong g_LastClosedDeal = 0;  // Track last processed deal to avoid duplicate alerts
+
+// Position tracking for auto execution
+ulong g_ExecutedSLPositions[];  // Array of position tickets that have executed Stop Loss
+ulong g_ExecutedBELinePositions[];  // Array of position tickets that have executed BE Line
+ulong g_ExecutedStandardTPPositions[];  // Array of position tickets that have executed Standard TP
+ulong g_ExecutedTP1Positions[];  // Array of position tickets that have executed TP1
+ulong g_ExecutedTP2Positions[];  // Array of position tickets that have executed TP2
+ulong g_ExecutedTP3Positions[];  // Array of position tickets that have executed TP3
+
+// Calculation results
+struct RiskCalculation
+{
+   double lotSize;
+   double priceRisk;
+   double commission;
+   double totalRisk;
+   double riskPercent;
+   double slPips;
+   double baseSLPips;      // Original SL distance (without entry slippage)
+   double tpPips;
+   double slPrice;
+   double tpPrice;
+   double entryPrice;
+   double breakEvenPips;
+   double grossTP;
+   double netTP;
+   double marginRequired;
+   double buyingPowerPercent;
+   double returnOnMargin;
+
+   // Pip distance metrics
+   double dollarPerPip;         // $ per pip for this trade (based on lot size)
+   double tpPipDistance;        // Standard TP profit in pip distance
+
+   // Partial exits
+   double partialLots1;
+   double partialLots2;
+   double partialLots3;
+   double partialPips1;
+   double partialPips2;
+   double partialPips3;
+   double partialTP1Price;
+   double partialTP2Price;
+   double partialTP3Price;
+   double partialGrossPnL1;
+   double partialGrossPnL2;
+   double partialGrossPnL3;
+   double partialNetPnL1;
+   double partialNetPnL2;
+   double partialNetPnL3;
+   double partialTotalNetPnL;
+   double partialPipDistance1;  // TP1 profit in pip distance
+   double partialPipDistance2;  // TP2 profit in pip distance
+   double partialPipDistance3;  // TP3 profit in pip distance
+   double partialTotalPipDistance; // Total profit in pip distance
+};
+
+RiskCalculation g_IdealCalc;
+RiskCalculation g_ConservativeCalc;
+
+//+------------------------------------------------------------------+
+//| Expert initialization function                                    |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+   //--- Initialize symbol info
+   g_Digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   g_Point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   
+   //--- Calculate pip value
+   string baseCurrency = SymbolInfoString(_Symbol, SYMBOL_CURRENCY_BASE);
+   string quoteCurrency = SymbolInfoString(_Symbol, SYMBOL_CURRENCY_PROFIT);
+   
+   // Determine pip size
+   if(StringFind(baseCurrency, "JPY") >= 0 || StringFind(quoteCurrency, "JPY") >= 0)
+      g_PipValue = 0.01;
+   else if(g_Digits == 5 || g_Digits == 3)
+      g_PipValue = g_Point * 10;
+   else
+      g_PipValue = g_Point;
+   
+   //--- Calculate point value per standard lot (USD per point per lot)
+   double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+   double contractSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_CONTRACT_SIZE);
+   
+   if(tickSize != 0 && tickValue != 0)
+      g_PointValue = (tickValue / tickSize) * g_Point;
+   else
+   {
+      // Fallback calculation
+      double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      if(quoteCurrency == "USD")
+         g_PointValue = g_Point * contractSize; // Direct USD quote
+      else
+         g_PointValue = (g_Point * contractSize) / bid; // Cross pair
+   }
+   
+   // Use manual pip value if mode is set to manual
+   double pipValuePerLot = (inpPipValueMode == PIP_MANUAL) ? inpManualPipValue : (g_PointValue * (g_PipValue / g_Point));
+   
+   Print("Symbol: ", _Symbol);
+   Print("Digits: ", g_Digits);
+   Print("Point: ", g_Point);
+   Print("Pip Value: ", g_PipValue);
+   Print("Point Value per lot: $", g_PointValue);
+   Print("Pip Value per lot: $", pipValuePerLot);
+   Print("Pip Value Mode: ", (inpPipValueMode == PIP_MANUAL ? "Manual" : "Auto"));
+   Print("Base Currency: ", baseCurrency);
+   Print("Quote Currency: ", quoteCurrency);
+   Print("Contract Size: ", contractSize);
+   Print("Tick Size: ", tickSize);
+   Print("Tick Value: ", tickValue);
+
+   //--- Initialize runtime variables
+   // Set BE Trigger to current price + 20 points offset to avoid overlap with entry line
+   g_BETriggerPriceRuntime = SymbolInfoDouble(_Symbol, SYMBOL_BID) + (20 * g_Point);
+
+   // Initialize TP settings from input parameters (will be overridden by .ini file if present)
+   g_NumberOfLevels = inpNumberOfLevels;
+   g_ExitPercent1 = inpExitPercent1;
+   g_ExitPercent2 = inpExitPercent2;
+
+   //--- Load settings from file (if configured)
+   LoadSettingsFromFile();
+
+   //--- Save current input parameters back to file (persists EA settings panel changes)
+   SaveSettingsToFile();
+
+   //--- Create UI
+   CreatePanel();
+   CreateButtons();
+   
+   //--- Initial calculation
+   CalculateRisk();
+   UpdatePanel();
+   UpdateLines();
+   
+   //--- Set timer for updates
+   EventSetTimer(1);
+   
+   return(INIT_SUCCEEDED);
+}
+
+//+------------------------------------------------------------------+
+//| Expert deinitialization function                                 |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+   //--- Kill timer
+   EventKillTimer();
+
+   //--- Delete all objects
+   DeletePanel();
+   DeleteButtons();
+   DeleteLines();
+
+   //--- Delete actual order lines
+   for(int i = ObjectsTotal(0, 0, OBJ_TREND) - 1; i >= 0; i--)
+   {
+      string objName = ObjectName(0, i, 0, OBJ_TREND);
+      if(StringFind(objName, "ActualEntry_") == 0 || StringFind(objName, "ActualBE_") == 0)
+         ObjectDelete(0, objName);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Manage Break-Even Automation                                     |
+//+------------------------------------------------------------------+
+void ManageBreakEven()
+{
+   // Exit if BE Trigger Line is disabled
+   if(!inpUseBETriggerLine)
+      return;
+
+   // Loop through all positions
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket <= 0) continue;
+
+      // Filter: only process positions for this symbol and magic number
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != 123456) continue;
+
+      // Get position details
+      double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+      double currentSL = PositionGetDouble(POSITION_SL);
+      double currentTP = PositionGetDouble(POSITION_TP);
+      ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+      string comment = PositionGetString(POSITION_COMMENT);
+
+      // Determine which calculation to use based on comment
+      bool useConservative = (StringFind(comment, "_CONS") >= 0);
+      RiskCalculation calc = useConservative ? g_ConservativeCalc : g_IdealCalc;
+
+      // Check if BE Trigger Line is set
+      if(g_BETriggerPriceRuntime <= 0)
+         continue;
+
+      double triggerPrice = g_BETriggerPriceRuntime;
+      bool shouldMoveToBE = false;
+
+      // Get execution price based on selected mode (Bid/Ask or Visual/Midpoint)
+      // Note: For BE trigger, we're not closing but checking if profit target reached
+      double currentPrice = GetExecutionPrice(posType, true);  // Use closing logic
+
+      // Check if price has reached trigger
+      if(posType == POSITION_TYPE_BUY)
+         shouldMoveToBE = (currentPrice >= triggerPrice);
+      else
+         shouldMoveToBE = (currentPrice <= triggerPrice);
+
+      // If trigger reached, move SL to break-even
+      if(shouldMoveToBE)
+      {
+         // Get actual position parameters
+         double actualEntry = PositionGetDouble(POSITION_PRICE_OPEN);
+
+         // Parse BE pips from comment (locked in at order placement)
+         double actualBEPips = 0;
+         int bePos = StringFind(comment, "|BE:");
+         if(bePos >= 0)
+         {
+            // Extract BE value from comment
+            string beStr = StringSubstr(comment, bePos + 4);  // Skip "|BE:"
+            actualBEPips = StringToDouble(beStr);
+         }
+         else
+         {
+            // Fallback: Calculate BE for old orders (no BE in comment)
+            double actualLotSize = PositionGetDouble(POSITION_VOLUME);
+            actualBEPips = CalculateBEPipsForOrder(actualLotSize);
+         }
+
+         // Add user's desired offset
+         double totalBEPips = actualBEPips + inpBEOffsetPips;
+
+         // Calculate BE price based on actual entry
+         double bePrice;
+         if(posType == POSITION_TYPE_BUY)
+            bePrice = actualEntry + (totalBEPips * g_PipValue);
+         else
+            bePrice = actualEntry - (totalBEPips * g_PipValue);
+
+         double newSL = NormalizeDouble(bePrice, g_Digits);
+
+         // Only move if current SL hasn't already been moved to or past BE
+         if(posType == POSITION_TYPE_BUY)
+         {
+            // Only move if current SL is below the new BE level
+            if(currentSL >= newSL) continue;
+         }
+         else // POSITION_TYPE_SELL
+         {
+            // Only move if current SL is above the new BE level
+            if(currentSL > 0 && currentSL <= newSL) continue;
+         }
+
+         // Validate stop level distance (broker requirements)
+         long stopLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+         double minDistance = stopLevel * g_Point;
+         double marketPrice = (posType == POSITION_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+         double actualDistance = (posType == POSITION_TYPE_BUY) ? (marketPrice - newSL) : (newSL - marketPrice);
+
+         // Check if SL is far enough from current price
+         if(actualDistance < minDistance)
+         {
+            Print("WARNING Cannot move SL to BE for Ticket #", ticket, " - too close to market (",
+                  DoubleToString(actualDistance / g_Point, 0), " points, minimum: ", stopLevel, " points)");
+            continue;
+         }
+
+         // Modify position SL to break-even
+         if(trade.PositionModify(ticket, newSL, currentTP))
+         {
+            Print("OK SL moved to BE (", DoubleToString(actualBEPips, 2), " + ", DoubleToString(inpBEOffsetPips, 1), " offset = ", DoubleToString(totalBEPips, 2), " pips) for Ticket #", ticket);
+
+            // Notifications
+            if(inpBEEnableAlert)
+               Alert("SL moved to BE+", DoubleToString(inpBEOffsetPips, 1), " pips for ", _Symbol, " Ticket #", ticket);
+
+            if(inpBEEnableSound)
+               PlaySound(inpBESoundFile);
+
+            if(inpBEEnablePush)
+               SendNotification("SL moved to BE for " + _Symbol + " Ticket: " + IntegerToString(ticket));
+
+            // Email alert for SL moved to BE
+            if(inpEmailAlertSLMovedToBE)
+            {
+               string subject = "MT5 Alert: SL Moved to Breakeven - " + _Symbol;
+               string body = "Stop Loss moved to Break-Even\n\n" +
+                            "Symbol: " + _Symbol + "\n" +
+                            "Ticket: " + IntegerToString(ticket) + "\n" +
+                            "BE Pips: " + DoubleToString(actualBEPips, 2) + "\n" +
+                            "Offset: " + DoubleToString(inpBEOffsetPips, 1) + " pips\n" +
+                            "Total: " + DoubleToString(totalBEPips, 2) + " pips\n" +
+                            "New SL: " + DoubleToString(newSL, _Digits) + "\n\n" +
+                            "Time: " + TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS);
+               SendMail(subject, body);
+            }
+
+            // Email alert for BE condition triggered
+            if(inpEmailAlertBETriggered)
+            {
+               string subject = "MT5 Alert: Break-Even Condition Triggered - " + _Symbol;
+               string body = "Break-Even trigger condition met!\n\n" +
+                            "Symbol: " + _Symbol + "\n" +
+                            "Ticket: " + IntegerToString(ticket) + "\n" +
+                            "Trigger Price Reached: " + DoubleToString(triggerPrice, _Digits) + "\n" +
+                            "Action: Moving SL to Break-Even\n\n" +
+                            "Time: " + TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS);
+               SendMail(subject, body);
+            }
+         }
+         else
+         {
+            Print("✗ Failed to modify SL for Ticket #", ticket, " - Error: ", trade.ResultRetcodeDescription());
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Helper: Check if position has already executed a TP level       |
+//+------------------------------------------------------------------+
+bool HasExecutedTPLevel(ulong ticket, int tpLevel)
+{
+   ulong ticketArray[];
+
+   if(tpLevel == 1)
+      ArrayCopy(ticketArray, g_ExecutedTP1Positions);
+   else if(tpLevel == 2)
+      ArrayCopy(ticketArray, g_ExecutedTP2Positions);
+   else if(tpLevel == 3)
+      ArrayCopy(ticketArray, g_ExecutedTP3Positions);
+   else
+      return false;
+
+   int size = ArraySize(ticketArray);
+   for(int i = 0; i < size; i++)
+   {
+      if(ticketArray[i] == ticket)
+         return true;
+   }
+
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| Helper: Mark position as having executed a TP level             |
+//+------------------------------------------------------------------+
+void MarkTPLevelExecuted(ulong ticket, int tpLevel)
+{
+   if(tpLevel == 1)
+   {
+      int size = ArraySize(g_ExecutedTP1Positions);
+      ArrayResize(g_ExecutedTP1Positions, size + 1);
+      g_ExecutedTP1Positions[size] = ticket;
+   }
+   else if(tpLevel == 2)
+   {
+      int size = ArraySize(g_ExecutedTP2Positions);
+      ArrayResize(g_ExecutedTP2Positions, size + 1);
+      g_ExecutedTP2Positions[size] = ticket;
+   }
+   else if(tpLevel == 3)
+   {
+      int size = ArraySize(g_ExecutedTP3Positions);
+      ArrayResize(g_ExecutedTP3Positions, size + 1);
+      g_ExecutedTP3Positions[size] = ticket;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Execute Partial TP Close                                         |
+//+------------------------------------------------------------------+
+bool ExecutePartialClose(ulong ticket, double percentage, int tpLevel, double tpPrice, double absoluteLots = 0)
+{
+   if(!PositionSelectByTicket(ticket))
+      return false;
+
+   double currentVolume = PositionGetDouble(POSITION_VOLUME);
+   double closeVolume;
+
+   // Use absolute lot size if provided, otherwise calculate from percentage
+   if(absoluteLots > 0)
+   {
+      closeVolume = NormalizeDouble(absoluteLots, 2);
+   }
+   else
+   {
+      closeVolume = NormalizeDouble(currentVolume * percentage / 100.0, 2);
+   }
+
+   // Ensure we close at least the minimum lot size
+   double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   if(closeVolume < minLot)
+   {
+      Print("WARNING: Calculated close volume (", closeVolume, ") is less than minimum lot size (", minLot, ")");
+      return false;
+   }
+
+   // Don't close more than available
+   if(closeVolume > currentVolume)
+      closeVolume = currentVolume;
+
+   // Execute the partial close
+   bool result = trade.PositionClosePartial(ticket, closeVolume);
+
+   if(result)
+   {
+      Print("OK Partial TP", tpLevel, " executed: Closed ", DoubleToString(closeVolume, 2),
+            " lots (", DoubleToString(percentage, 1), "%) at TP", tpLevel, " price ", DoubleToString(tpPrice, _Digits),
+            " for Ticket #", ticket);
+      return true;
+   }
+   else
+   {
+      Print("✗ Failed to execute partial close for Ticket #", ticket, " - Error: ", trade.ResultRetcodeDescription());
+      return false;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Manage Stop Loss Execution Automation                            |
+//+------------------------------------------------------------------+
+void ManageStopLossExecution()
+{
+   // Exit if auto-execution is disabled
+   if(!inpAutoExecuteSL)
+      return;
+
+   // Only works in Dynamic SL mode
+   if(inpSLMode != SL_DYNAMIC)
+      return;
+
+   // Loop through all positions
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket <= 0) continue;
+
+      // Filter: only process positions for this symbol
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+
+      // Check if already executed
+      int size = ArraySize(g_ExecutedSLPositions);
+      bool alreadyExecuted = false;
+      for(int j = 0; j < size; j++)
+      {
+         if(g_ExecutedSLPositions[j] == ticket)
+         {
+            alreadyExecuted = true;
+            break;
+         }
+      }
+      if(alreadyExecuted) continue;
+
+      // Get position details
+      ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+      string comment = PositionGetString(POSITION_COMMENT);
+
+      // Determine which calculation to use based on comment
+      bool useConservative = (StringFind(comment, "_CONS") >= 0);
+      RiskCalculation calc = useConservative ? g_ConservativeCalc : g_IdealCalc;
+
+      // Check if SL price is set
+      if(calc.slPrice <= 0)
+         continue;
+
+      // Get execution price based on selected mode (Bid/Ask or Visual/Midpoint)
+      double currentPrice = GetExecutionPrice(posType, true);  // true = closing position
+
+      // Check if SL reached (price went against us)
+      bool slReached = false;
+      if(posType == POSITION_TYPE_BUY)
+         slReached = (currentPrice <= calc.slPrice);  // For BUY, SL is below entry
+      else
+         slReached = (currentPrice >= calc.slPrice);  // For SELL, SL is above entry
+
+      if(slReached)
+      {
+         // Close entire position
+         bool result = trade.PositionClose(ticket);
+
+         if(result)
+         {
+            Print("OK Stop Loss executed: Closed entire position at SL price ", DoubleToString(calc.slPrice, _Digits),
+                  " for Ticket #", ticket);
+
+            // Mark as executed
+            ArrayResize(g_ExecutedSLPositions, size + 1);
+            g_ExecutedSLPositions[size] = ticket;
+
+            // Notifications
+            if(inpSLExecuteEnableAlert)
+               Alert("Stop Loss executed (100%) for ", _Symbol, " Ticket #", ticket);
+
+            if(inpSLExecuteEnableSound)
+               PlaySound(inpSLExecuteSoundFile);
+
+            if(inpSLExecuteEnablePush)
+               SendNotification("Stop Loss executed for " + _Symbol + " Ticket: " + IntegerToString(ticket));
+
+            if(inpSLExecuteEnableEmail)
+            {
+               string subject = "MT5 Alert: Stop Loss Executed - " + _Symbol;
+               string body = "Stop Loss executed!\n\n" +
+                            "Symbol: " + _Symbol + "\n" +
+                            "Ticket: " + IntegerToString(ticket) + "\n" +
+                            "SL Price: " + DoubleToString(calc.slPrice, _Digits) + "\n" +
+                            "Closed: 100% (Full Position)\n" +
+                            "Time: " + TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS);
+               SendMail(subject, body);
+            }
+         }
+         else
+         {
+            Print("✗ Failed to close position for Ticket #", ticket, " - Error: ", trade.ResultRetcodeDescription());
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Manage BE Line Execution Automation (Risk-Free Exit)            |
+//+------------------------------------------------------------------+
+void ManageBELineExecution()
+{
+   // Exit if auto-execution is disabled
+   if(!inpAutoExecuteAtBE)
+      return;
+
+   // Loop through all positions
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket <= 0) continue;
+
+      // Filter: only process positions for this symbol
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+
+      // Check if already executed
+      int size = ArraySize(g_ExecutedBELinePositions);
+      bool alreadyExecuted = false;
+      for(int j = 0; j < size; j++)
+      {
+         if(g_ExecutedBELinePositions[j] == ticket)
+         {
+            alreadyExecuted = true;
+            break;
+         }
+      }
+      if(alreadyExecuted) continue;
+
+      // Get position details
+      double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+      ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+      string comment = PositionGetString(POSITION_COMMENT);
+
+      // Parse BE pips from comment (locked in at order placement)
+      double actualBEPips = 0;
+      int bePos = StringFind(comment, "|BE:");
+      if(bePos >= 0)
+      {
+         // Extract BE value from comment
+         string beStr = StringSubstr(comment, bePos + 4);  // Skip "|BE:"
+         actualBEPips = StringToDouble(beStr);
+      }
+      else
+      {
+         // Fallback: Calculate BE for positions without BE in comment
+         double actualLotSize = PositionGetDouble(POSITION_VOLUME);
+         actualBEPips = CalculateBEPipsForOrder(actualLotSize);
+      }
+
+      // Add user's desired offset
+      double totalBEPips = actualBEPips + inpBEOffsetPips;
+
+      // Calculate BE price based on actual entry
+      double bePrice;
+      if(posType == POSITION_TYPE_BUY)
+         bePrice = entryPrice + (totalBEPips * g_PipValue);
+      else // POSITION_TYPE_SELL
+         bePrice = entryPrice - (totalBEPips * g_PipValue);
+
+      bePrice = NormalizeDouble(bePrice, g_Digits);
+
+      // Get execution price based on selected mode (Bid/Ask or Visual/Midpoint)
+      double currentPrice = GetExecutionPrice(posType, true);  // true = closing position
+
+      // Check if BE line reached (price came back to breakeven)
+      bool beLineReached = false;
+      if(posType == POSITION_TYPE_BUY)
+         beLineReached = (currentPrice <= bePrice);  // For BUY, BE is below current (pullback)
+      else
+         beLineReached = (currentPrice >= bePrice);  // For SELL, BE is above current (pullback)
+
+      if(beLineReached)
+      {
+         // Close entire position at breakeven
+         bool result = trade.PositionClose(ticket);
+
+         if(result)
+         {
+            Print("OK BE Line executed: Closed entire position at BE price ", DoubleToString(bePrice, _Digits),
+                  " (Risk-Free Exit) for Ticket #", ticket);
+
+            // Mark as executed
+            ArrayResize(g_ExecutedBELinePositions, size + 1);
+            g_ExecutedBELinePositions[size] = ticket;
+
+            // Notifications
+            if(inpBEEnableAlert)
+               Alert("BE Line executed (Risk-Free Exit) for ", _Symbol, " Ticket #", ticket);
+
+            if(inpBEEnableSound)
+               PlaySound(inpBESoundFile);
+
+            if(inpBEEnablePush)
+               SendNotification("BE Line executed (Risk-Free) for " + _Symbol + " Ticket: " + IntegerToString(ticket));
+
+            if(inpBEExecuteEnableEmail)
+            {
+               string subject = "MT5 Alert: BE Line Executed (Risk-Free) - " + _Symbol;
+               string body = "Breakeven Line executed - Risk-Free Exit!\n\n" +
+                            "Symbol: " + _Symbol + "\n" +
+                            "Ticket: " + IntegerToString(ticket) + "\n" +
+                            "BE Price: " + DoubleToString(bePrice, _Digits) + "\n" +
+                            "BE Pips: " + DoubleToString(totalBEPips, 2) + "\n" +
+                            "Closed: 100% (Full Position)\n" +
+                            "Time: " + TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS);
+               SendMail(subject, body);
+            }
+         }
+         else
+         {
+            Print("✗ Failed to close position for Ticket #", ticket, " - Error: ", trade.ResultRetcodeDescription());
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Manage Trailing Stop (Move SL to Next TP Level)                  |
+//+------------------------------------------------------------------+
+void ManageTrailingStop()
+{
+   // Exit if trailing stop is disabled
+   if(!inpTrailSLToNextTP)
+      return;
+
+   // Loop through all positions
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket <= 0) continue;
+
+      // Filter: only process positions for this symbol and magic number
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != 123456) continue;
+
+      // Get position details
+      ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+      string comment = PositionGetString(POSITION_COMMENT);
+      double currentSL = PositionGetDouble(POSITION_SL);
+      double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+
+      // Determine which calculation to use based on comment
+      bool useConservative = (StringFind(comment, "_CONS") >= 0);
+      RiskCalculation calc = useConservative ? g_ConservativeCalc : g_IdealCalc;
+
+      double newSL = 0;
+      int levelToTrail = 0;
+
+      // Trailing Stop Logic: Move SL to PREVIOUS level when NEXT level is hit
+      // TP1 hit → Move SL to BE (breakeven/entry price)
+      if(HasExecutedTPLevel(ticket, 1) && !HasExecutedTPLevel(ticket, 2))
+      {
+         newSL = entryPrice;
+         levelToTrail = 0; // 0 = BE
+      }
+      // TP2 hit → Move SL to TP1 price
+      else if(HasExecutedTPLevel(ticket, 2) && !HasExecutedTPLevel(ticket, 3) && inpNumberOfLevels >= 2)
+      {
+         newSL = calc.partialTP1Price;
+         levelToTrail = 1;
+      }
+      // Note: If TP3 is hit, position is fully closed (100%), so no SL adjustment needed
+
+      // Execute SL modification if needed
+      if(newSL > 0 && levelToTrail >= 0)
+      {
+         // Check if we haven't already moved SL to this level
+         double tolerance = g_Point * 5; // 5 point tolerance
+         bool slAlreadyMoved = MathAbs(currentSL - newSL) < tolerance;
+
+         if(!slAlreadyMoved)
+         {
+            // Normalize SL price
+            newSL = NormalizeDouble(newSL, g_Digits);
+
+            // Modify position SL
+            if(trade.PositionModify(ticket, newSL, 0))
+            {
+               string levelName = (levelToTrail == 0) ? "BE" : "TP" + IntegerToString(levelToTrail);
+               Print("OK Trailing Stop: Moved SL to ", levelName, " price ", DoubleToString(newSL, g_Digits), " for Ticket #", ticket);
+
+               // Send notifications
+               if(inpBEEnableAlert)
+                  Alert("Trailing Stop: SL moved to ", levelName, " for ", _Symbol, " Ticket #", ticket);
+
+               if(inpBEEnableSound)
+                  PlaySound(inpBESoundFile);
+
+               if(inpBEEnablePush)
+                  SendNotification("Trailing Stop: SL moved to " + levelName + " for " + _Symbol + " Ticket: " + IntegerToString(ticket));
+            }
+            else
+            {
+               Print("✗ Failed to trail SL for Ticket #", ticket, " - Error: ", trade.ResultRetcodeDescription());
+            }
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Manage Partial TP Execution Automation                           |
+//+------------------------------------------------------------------+
+void ManagePartialTPExecution()
+{
+   // Exit if all auto-execution features are disabled
+   if(!inpAutoExecuteTP1 && !inpAutoExecuteTP2 && !inpAutoExecuteTP3)
+      return;
+
+   // Loop through all positions
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket <= 0) continue;
+
+      // Filter: only process positions for this symbol
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+
+      // Get position details
+      ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+      string comment = PositionGetString(POSITION_COMMENT);
+
+      // Determine which calculation to use based on comment
+      bool useConservative = (StringFind(comment, "_CONS") >= 0);
+      RiskCalculation calc = useConservative ? g_ConservativeCalc : g_IdealCalc;
+
+      // Get execution price based on selected mode (Bid/Ask or Visual/Midpoint)
+      double currentPrice = GetExecutionPrice(posType, true);  // true = closing position
+
+      // Check TP1
+      if(inpAutoExecuteTP1 && !HasExecutedTPLevel(ticket, 1) && calc.partialTP1Price > 0)
+      {
+         bool tp1Reached = false;
+         if(posType == POSITION_TYPE_BUY)
+            tp1Reached = (currentPrice >= calc.partialTP1Price);
+         else
+            tp1Reached = (currentPrice <= calc.partialTP1Price);
+
+         if(tp1Reached)
+         {
+            if(ExecutePartialClose(ticket, inpExitPercent1, 1, calc.partialTP1Price, g_PartialLots1))
+            {
+               MarkTPLevelExecuted(ticket, 1);
+
+               // Notifications
+               if(inpTPExecuteEnableAlert)
+                  Alert("Partial TP1 executed (", DoubleToString(inpExitPercent1, 1), "%) for ", _Symbol, " Ticket #", ticket);
+
+               if(inpTPExecuteEnableSound)
+                  PlaySound(inpTPExecuteSoundFile);
+
+               if(inpTPExecuteEnablePush)
+                  SendNotification("Partial TP1 executed for " + _Symbol + " Ticket: " + IntegerToString(ticket));
+
+               if(inpTPExecuteEnableEmail)
+               {
+                  string subject = "MT5 Alert: Partial TP1 Executed - " + _Symbol;
+                  string body = "Partial Take Profit 1 executed!\n\n" +
+                               "Symbol: " + _Symbol + "\n" +
+                               "Ticket: " + IntegerToString(ticket) + "\n" +
+                               "TP1 Price: " + DoubleToString(calc.partialTP1Price, _Digits) + "\n" +
+                               "Closed: " + DoubleToString(inpExitPercent1, 1) + "%\n" +
+                               "Time: " + TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS);
+                  SendMail(subject, body);
+               }
+            }
+         }
+      }
+
+      // Check TP2
+      if(inpAutoExecuteTP2 && !HasExecutedTPLevel(ticket, 2) && calc.partialTP2Price > 0)
+      {
+         bool tp2Reached = false;
+         if(posType == POSITION_TYPE_BUY)
+            tp2Reached = (currentPrice >= calc.partialTP2Price);
+         else
+            tp2Reached = (currentPrice <= calc.partialTP2Price);
+
+         if(tp2Reached)
+         {
+            if(ExecutePartialClose(ticket, inpExitPercent2, 2, calc.partialTP2Price, g_PartialLots2))
+            {
+               MarkTPLevelExecuted(ticket, 2);
+
+               // Notifications
+               if(inpTPExecuteEnableAlert)
+                  Alert("Partial TP2 executed (", DoubleToString(inpExitPercent2, 1), "%) for ", _Symbol, " Ticket #", ticket);
+
+               if(inpTPExecuteEnableSound)
+                  PlaySound(inpTPExecuteSoundFile);
+
+               if(inpTPExecuteEnablePush)
+                  SendNotification("Partial TP2 executed for " + _Symbol + " Ticket: " + IntegerToString(ticket));
+
+               if(inpTPExecuteEnableEmail)
+               {
+                  string subject = "MT5 Alert: Partial TP2 Executed - " + _Symbol;
+                  string body = "Partial Take Profit 2 executed!\n\n" +
+                               "Symbol: " + _Symbol + "\n" +
+                               "Ticket: " + IntegerToString(ticket) + "\n" +
+                               "TP2 Price: " + DoubleToString(calc.partialTP2Price, _Digits) + "\n" +
+                               "Closed: " + DoubleToString(inpExitPercent2, 1) + "%\n" +
+                               "Time: " + TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS);
+                  SendMail(subject, body);
+               }
+            }
+         }
+      }
+
+      // Check TP3 (only if 3 levels are configured)
+      if(inpNumberOfLevels == 3 && inpAutoExecuteTP3 && !HasExecutedTPLevel(ticket, 3) && calc.partialTP3Price > 0)
+      {
+         bool tp3Reached = false;
+         if(posType == POSITION_TYPE_BUY)
+            tp3Reached = (currentPrice >= calc.partialTP3Price);
+         else
+            tp3Reached = (currentPrice <= calc.partialTP3Price);
+
+         if(tp3Reached)
+         {
+            // Calculate remaining percentage for TP3
+            double remainingPercent = 100.0 - inpExitPercent1 - inpExitPercent2;
+
+            if(ExecutePartialClose(ticket, remainingPercent, 3, calc.partialTP3Price, g_PartialLots3))
+            {
+               MarkTPLevelExecuted(ticket, 3);
+
+               // Notifications
+               if(inpTPExecuteEnableAlert)
+                  Alert("Partial TP3 executed (", DoubleToString(remainingPercent, 1), "%) for ", _Symbol, " Ticket #", ticket);
+
+               if(inpTPExecuteEnableSound)
+                  PlaySound(inpTPExecuteSoundFile);
+
+               if(inpTPExecuteEnablePush)
+                  SendNotification("Partial TP3 executed for " + _Symbol + " Ticket: " + IntegerToString(ticket));
+
+               if(inpTPExecuteEnableEmail)
+               {
+                  string subject = "MT5 Alert: Partial TP3 Executed - " + _Symbol;
+                  string body = "Partial Take Profit 3 executed!\n\n" +
+                               "Symbol: " + _Symbol + "\n" +
+                               "Ticket: " + IntegerToString(ticket) + "\n" +
+                               "TP3 Price: " + DoubleToString(calc.partialTP3Price, _Digits) + "\n" +
+                               "Closed: " + DoubleToString(remainingPercent, 1) + "% (Remaining)\n" +
+                               "Time: " + TimeToString(TimeCurrent(), TIME_DATE | TIME_SECONDS);
+                  SendMail(subject, body);
+               }
+            }
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Expert tick function                                             |
+//+------------------------------------------------------------------+
+void OnTick()
+{
+   //--- Recalculate on every tick
+   CalculateRisk();
+   UpdatePanel();
+   UpdateLines();
+   DrawActualOrderLines();  // Draw entry and BE lines for placed orders
+   ManageBreakEven();
+   ManageStopLossExecution();
+   ManageBELineExecution();
+   ManagePartialTPExecution();
+   ManageTrailingStop();
+}
+
+//+------------------------------------------------------------------+
+//| Timer function                                                    |
+//+------------------------------------------------------------------+
+void OnTimer()
+{
+   //--- Check for settings file changes
+   CheckAndReloadSettings();
+
+   //--- Update display
+   if(inpShowPanel)
+      UpdatePanel();
+}
+
+//+------------------------------------------------------------------+
+//| Trade function - Monitor position closes for email alerts        |
+//+------------------------------------------------------------------+
+void OnTrade()
+{
+   // Request history for the last 24 hours
+   datetime timeFrom = TimeCurrent() - 86400;  // 24 hours ago
+   datetime timeTo = TimeCurrent();
+
+   if(!HistorySelect(timeFrom, timeTo))
+      return;
+
+   int totalDeals = HistoryDealsTotal();
+
+   // Check the most recent deals (process backwards to get latest first)
+   for(int i = totalDeals - 1; i >= 0; i--)
+   {
+      ulong dealTicket = HistoryDealGetTicket(i);
+      if(dealTicket == 0)
+         continue;
+
+      // Skip if we've already processed this deal
+      if(dealTicket <= g_LastClosedDeal)
+         break;
+
+      // Only process deals for this symbol
+      if(HistoryDealGetString(dealTicket, DEAL_SYMBOL) != _Symbol)
+         continue;
+
+      // Only process position closures (OUT deals)
+      ENUM_DEAL_ENTRY dealEntry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
+      if(dealEntry != DEAL_ENTRY_OUT)
+         continue;
+
+      // Update last processed deal
+      g_LastClosedDeal = dealTicket;
+
+      // Get deal information
+      ulong positionTicket = HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID);
+      double profit = HistoryDealGetDouble(dealTicket, DEAL_PROFIT);
+      double volume = HistoryDealGetDouble(dealTicket, DEAL_VOLUME);
+      double price = HistoryDealGetDouble(dealTicket, DEAL_PRICE);
+      ENUM_DEAL_REASON dealReason = (ENUM_DEAL_REASON)HistoryDealGetInteger(dealTicket, DEAL_REASON);
+      string symbol = HistoryDealGetString(dealTicket, DEAL_SYMBOL);
+      datetime dealTime = (datetime)HistoryDealGetInteger(dealTicket, DEAL_TIME);
+
+      // Note: Email alerts for TP/SL hits are now handled by auto-execution functions
+      // (ManageStopLossExecution, ManagePartialTPExecution)
+   }
+}
+
+//+------------------------------------------------------------------+
+//| ChartEvent function                                              |
+//+------------------------------------------------------------------+
+void OnChartEvent(const int id,
+                  const long &lparam,
+                  const double &dparam,
+                  const string &sparam)
+{
+   //--- Check for button clicks
+   if(id == CHARTEVENT_OBJECT_CLICK)
+   {
+      if(sparam == g_BuyButtonName)
+      {
+         ExecuteBuyOrder();
+         ObjectSetInteger(0, g_BuyButtonName, OBJPROP_STATE, false);
+      }
+      else if(sparam == g_SellButtonName)
+      {
+         ExecuteSellOrder();
+         ObjectSetInteger(0, g_SellButtonName, OBJPROP_STATE, false);
+      }
+      else if(sparam == g_MoveToBEButtonName)
+      {
+         MoveSLToBreakEven();
+         ObjectSetInteger(0, g_MoveToBEButtonName, OBJPROP_STATE, false);
+      }
+      else if(sparam == g_CloseAllButtonName)
+      {
+         CloseAllTrades();
+         ObjectSetInteger(0, g_CloseAllButtonName, OBJPROP_STATE, false);
+      }
+   }
+
+   //--- Detect when lines are dragged (Dynamic mode)
+   if(id == CHARTEVENT_OBJECT_DRAG)
+   {
+      // SL Line dragged (Dynamic or Hybrid mode)
+      if(sparam == g_SLLineName && (inpSLMode == SL_DYNAMIC || inpSLMode == SL_HYBRID))
+      {
+         double newPrice = ObjectGetDouble(0, g_SLLineName, OBJPROP_PRICE, 0);
+
+         // Normalize to tick size
+         double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+         newPrice = NormalizeDouble(MathRound(newPrice / tickSize) * tickSize, g_Digits);
+
+         // Update the line to normalized price
+         datetime currentTime = TimeCurrent();
+         datetime futureTime = currentTime + PeriodSeconds(PERIOD_CURRENT) * 100;
+         ObjectMove(0, g_SLLineName, 0, currentTime, newPrice);
+         ObjectMove(0, g_SLLineName, 1, futureTime, newPrice);
+
+         // Save to global variable for file sync
+         g_DynamicSLPrice = newPrice;
+
+         // Recalculate risk with new SL
+         CalculateRisk();
+         UpdatePanel();
+
+         // IMMEDIATE label update (fixes 3-second lag)
+         RiskCalculation calc = (inpDisplayMode == DISPLAY_CONSERVATIVE) ? g_ConservativeCalc : g_IdealCalc;
+         double currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+         double slPips = MathAbs(currentPrice - calc.slPrice) / g_PipValue;
+         string slLabel = "SL: " + DoubleToString(slPips, 1) + " pips";
+         UpdateLabelPosition(g_SLLabelName, calc.slPrice, slLabel);
+
+         // Auto-save global variables
+         if(inpExportDirectory != "")
+            SaveSettingsToFile();
+
+         Print("OK SL dragged to: ", DoubleToString(calc.slPrice, g_Digits), " (", DoubleToString(slPips, 1), " pips)");
+      }
+      // Partial TP1 Line dragged
+      else if(sparam == g_PartialTP1LineName)
+      {
+         double newPrice = ObjectGetDouble(0, g_PartialTP1LineName, OBJPROP_PRICE, 0);
+
+         // Normalize to tick size
+         double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+         newPrice = NormalizeDouble(MathRound(newPrice / tickSize) * tickSize, g_Digits);
+
+         // Update the line to normalized price
+         datetime currentTime = TimeCurrent();
+         datetime futureTime = currentTime + PeriodSeconds(PERIOD_CURRENT) * 100;
+         ObjectMove(0, g_PartialTP1LineName, 0, currentTime, newPrice);
+         ObjectMove(0, g_PartialTP1LineName, 1, futureTime, newPrice);
+
+         // Save to global variable for file sync
+         g_PartialTP1Price = newPrice;
+
+         // Recalculate risk with new TP1
+         CalculateRisk();
+         UpdatePanel();
+
+         // IMMEDIATE label update (fixes 3-second lag)
+         RiskCalculation calc = (inpDisplayMode == DISPLAY_CONSERVATIVE) ? g_ConservativeCalc : g_IdealCalc;
+
+         // Calculate RR using actual gross profit from partial position
+         double rr1 = (calc.totalRisk > 0) ? (calc.partialGrossPnL1 / calc.totalRisk) : 0;
+
+         string tp1Label = "TP1: " + DoubleToString(GetActiveExitPercent1(), 0) + "% (" + DoubleToString(calc.partialLots1, 2) + " lots) @ " + DoubleToString(calc.partialPips1, 1) + " pips";
+         if(rr1 > 0) tp1Label += " | RR: " + DoubleToString(rr1, 2);
+         UpdateLabelPosition(g_PartialTP1LabelName, calc.partialTP1Price, tp1Label);
+
+         // Auto-save global variables
+         if(inpExportDirectory != "")
+            SaveSettingsToFile();
+
+         Print("OK TP1 dragged to: ", DoubleToString(calc.partialTP1Price, g_Digits), " (", DoubleToString(calc.partialPips1, 1), " pips, RR: ", DoubleToString(rr1, 2), ")");
+      }
+      // Partial TP2 Line dragged
+      else if(sparam == g_PartialTP2LineName)
+      {
+         double newPrice = ObjectGetDouble(0, g_PartialTP2LineName, OBJPROP_PRICE, 0);
+
+         // Normalize to tick size
+         double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+         newPrice = NormalizeDouble(MathRound(newPrice / tickSize) * tickSize, g_Digits);
+
+         // Update the line to normalized price
+         datetime currentTime = TimeCurrent();
+         datetime futureTime = currentTime + PeriodSeconds(PERIOD_CURRENT) * 100;
+         ObjectMove(0, g_PartialTP2LineName, 0, currentTime, newPrice);
+         ObjectMove(0, g_PartialTP2LineName, 1, futureTime, newPrice);
+
+         // Save to global variable for file sync
+         g_PartialTP2Price = newPrice;
+
+         // Recalculate risk with new TP2
+         CalculateRisk();
+         UpdatePanel();
+
+         // IMMEDIATE label update (fixes 3-second lag)
+         RiskCalculation calc = (inpDisplayMode == DISPLAY_CONSERVATIVE) ? g_ConservativeCalc : g_IdealCalc;
+
+         // Calculate RR using actual gross profit from partial position
+         double rr2 = (calc.totalRisk > 0) ? (calc.partialGrossPnL2 / calc.totalRisk) : 0;
+         string tp2Label = "TP2: " + DoubleToString(GetActiveExitPercent2(), 0) + "% (" + DoubleToString(calc.partialLots2, 2) + " lots) @ " + DoubleToString(calc.partialPips2, 1) + " pips";
+         if(rr2 > 0) tp2Label += " | RR: " + DoubleToString(rr2, 2);
+         UpdateLabelPosition(g_PartialTP2LabelName, calc.partialTP2Price, tp2Label);
+
+         // Auto-save global variables
+         if(inpExportDirectory != "")
+            SaveSettingsToFile();
+
+         Print("OK TP2 dragged to: ", DoubleToString(calc.partialTP2Price, g_Digits), " (", DoubleToString(calc.partialPips2, 1), " pips, RR: ", DoubleToString(rr2, 2), ")");
+      }
+      // Partial TP3 Line dragged
+      else if(sparam == g_PartialTP3LineName && inpNumberOfLevels == 3)
+      {
+         double newPrice = ObjectGetDouble(0, g_PartialTP3LineName, OBJPROP_PRICE, 0);
+
+         // Normalize to tick size
+         double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+         newPrice = NormalizeDouble(MathRound(newPrice / tickSize) * tickSize, g_Digits);
+
+         // Update the line to normalized price
+         datetime currentTime = TimeCurrent();
+         datetime futureTime = currentTime + PeriodSeconds(PERIOD_CURRENT) * 100;
+         ObjectMove(0, g_PartialTP3LineName, 0, currentTime, newPrice);
+         ObjectMove(0, g_PartialTP3LineName, 1, futureTime, newPrice);
+
+         // Save to global variable for file sync
+         g_PartialTP3Price = newPrice;
+
+         // Recalculate risk with new TP3
+         CalculateRisk();
+         UpdatePanel();
+
+         // IMMEDIATE label update (fixes 3-second lag)
+         RiskCalculation calc = (inpDisplayMode == DISPLAY_CONSERVATIVE) ? g_ConservativeCalc : g_IdealCalc;
+         double exitPercent3 = 100 - GetActiveExitPercent1() - GetActiveExitPercent2();
+
+         // Calculate RR using actual gross profit from partial position
+         double rr3 = (calc.totalRisk > 0) ? (calc.partialGrossPnL3 / calc.totalRisk) : 0;
+         string tp3Label = "TP3: " + DoubleToString(exitPercent3, 0) + "% (" + DoubleToString(calc.partialLots3, 2) + " lots) @ " + DoubleToString(calc.partialPips3, 1) + " pips";
+         if(rr3 > 0) tp3Label += " | RR: " + DoubleToString(rr3, 2);
+         UpdateLabelPosition(g_PartialTP3LabelName, calc.partialTP3Price, tp3Label);
+
+         // Auto-save global variables
+         if(inpExportDirectory != "")
+            SaveSettingsToFile();
+
+         Print("OK TP3 dragged to: ", DoubleToString(calc.partialTP3Price, g_Digits), " (", DoubleToString(calc.partialPips3, 1), " pips, RR: ", DoubleToString(rr3, 2), ")");
+      }
+      // BE Trigger Line dragged
+      else if(sparam == g_BETriggerLineName && inpUseBETriggerLine)
+      {
+         double newPrice = ObjectGetDouble(0, g_BETriggerLineName, OBJPROP_PRICE, 0);
+
+         // Normalize to tick size
+         double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+         newPrice = NormalizeDouble(MathRound(newPrice / tickSize) * tickSize, g_Digits);
+
+         // Update the line to normalized price
+         datetime currentTime = TimeCurrent();
+         datetime futureTime = currentTime + PeriodSeconds(PERIOD_CURRENT) * 100;
+         ObjectMove(0, g_BETriggerLineName, 0, currentTime, newPrice);
+         ObjectMove(0, g_BETriggerLineName, 1, futureTime, newPrice);
+
+         // Update runtime variable
+         g_BETriggerPriceRuntime = newPrice;
+
+         // Update line label
+         ObjectSetString(0, g_BETriggerLineName, OBJPROP_TEXT, "BE Trigger: " + DoubleToString(newPrice, _Digits));
+         UpdateLabelPosition(g_BETriggerLabelName, g_BETriggerPriceRuntime, "BE Trigger");
+
+         // Auto-save global variables
+         if(inpExportDirectory != "")
+            SaveSettingsToFile();
+
+         Print("OK BE Trigger line dragged to: ", DoubleToString(newPrice, g_Digits));
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Calculate Risk and Lot Sizes                                     |
+//+------------------------------------------------------------------+
+void CalculateRisk()
+{
+   // Use close[0] logic from price-line.mq5 for entry line display
+   double currentPrice = iClose(_Symbol, PERIOD_CURRENT, 0);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   
+   //--- Determine SL distance in pips
+   double slPips = 0;
+   double slPrice = 0;
+   bool isLongTrade = true;  // Determine trade direction
+   
+   if(inpSLMode == SL_MANUAL)
+   {
+      slPips = inpManualSLPips;
+
+      // Auto-detect trade direction based on TP line position
+      if(inpTradeDirection == TRADE_AUTO)
+      {
+         // Use TP1 position to determine direction
+         if(g_PartialTP1Price > 0)
+         {
+            // If TP is above current price = Long, if below = Short
+            isLongTrade = (g_PartialTP1Price > currentPrice);
+         }
+         else
+         {
+            // Default to Long if no TP set yet
+            isLongTrade = true;
+         }
+      }
+      else
+      {
+         isLongTrade = (inpTradeDirection == TRADE_BUY);
+      }
+
+      if(isLongTrade)
+         slPrice = currentPrice - (slPips * g_PipValue);
+      else
+         slPrice = currentPrice + (slPips * g_PipValue);
+   }
+   else if(inpSLMode == SL_DYNAMIC)
+   {
+      // Use g_DynamicSLPrice if set, otherwise use manual SL pips as default
+      if(g_DynamicSLPrice > 0)
+      {
+         slPrice = g_DynamicSLPrice;
+         slPips = MathAbs(currentPrice - slPrice) / g_PipValue;
+         // Determine direction: if SL is below current price = LONG, if above = SHORT
+         isLongTrade = (slPrice < currentPrice);
+      }
+      else
+      {
+         // Default: use manual SL pips distance (line will be created and user can drag it)
+         slPips = inpManualSLPips;
+         slPrice = currentPrice - (slPips * g_PipValue);
+         isLongTrade = true;
+      }
+   }
+   else // SL_HYBRID
+   {
+      slPips = inpManualSLPips;
+
+      // Auto-detect trade direction based on TP line position
+      if(inpTradeDirection == TRADE_AUTO)
+      {
+         if(g_PartialTP1Price > 0)
+         {
+            isLongTrade = (g_PartialTP1Price > currentPrice);
+         }
+         else
+         {
+            isLongTrade = true;
+         }
+      }
+      else
+      {
+         isLongTrade = (inpTradeDirection == TRADE_BUY);
+      }
+
+      // Calculate reference SL (like manual mode)
+      double referenceSL;
+      if(isLongTrade)
+         referenceSL = currentPrice - (slPips * g_PipValue);
+      else
+         referenceSL = currentPrice + (slPips * g_PipValue);
+
+      g_ReferenceSLPrice = referenceSL;  // Store for display
+
+      // Use dynamic SL for actual trading if set, otherwise use reference SL
+      if(g_DynamicSLPrice > 0)
+      {
+         slPrice = g_DynamicSLPrice;
+         slPips = MathAbs(currentPrice - slPrice) / g_PipValue;
+      }
+      else
+      {
+         // Default to reference SL
+         slPrice = referenceSL;
+      }
+   }
+   
+   //--- IDEAL CALCULATION (No Entry Slippage)
+   double idealTotalPips = slPips + inpExitSlippage;
+   double riskAmount = inpAccountSize * (inpRiskPercent / 100.0);
+   
+   // Calculate pip value in USD for the lot size calculation
+   double pipValuePerLot = (inpPipValueMode == PIP_MANUAL) ? inpManualPipValue : (g_PointValue * (g_PipValue / g_Point));
+   
+   g_IdealCalc.baseSLPips = slPips;  // Store base SL
+   g_IdealCalc.slPips = slPips;
+   g_IdealCalc.lotSize = riskAmount / ((idealTotalPips * pipValuePerLot) + inpCommissionPerLot);
+   g_IdealCalc.commission = g_IdealCalc.lotSize * inpCommissionPerLot;
+   g_IdealCalc.priceRisk = g_IdealCalc.lotSize * idealTotalPips * pipValuePerLot;
+   g_IdealCalc.totalRisk = g_IdealCalc.priceRisk + g_IdealCalc.commission;
+   g_IdealCalc.riskPercent = (g_IdealCalc.totalRisk / inpAccountSize) * 100.0;
+   g_IdealCalc.entryPrice = currentPrice;
+   g_IdealCalc.slPrice = slPrice;
+   
+   // Break-even calculation
+   double idealTotalFees = g_IdealCalc.commission + (g_IdealCalc.lotSize * inpExitSlippage * pipValuePerLot);
+   g_IdealCalc.breakEvenPips = idealTotalFees / (g_IdealCalc.lotSize * pipValuePerLot);
+
+   // Pip distance calculation
+   g_IdealCalc.dollarPerPip = g_IdealCalc.lotSize * pipValuePerLot;
+   g_IdealCalc.tpPipDistance = (g_IdealCalc.dollarPerPip > 0) ? (g_IdealCalc.grossTP / g_IdealCalc.dollarPerPip) : 0;
+
+   // Margin calculation
+   double idealContractValue = g_IdealCalc.lotSize * 100000;
+   double idealNotionalUSD = idealContractValue * currentPrice;
+   g_IdealCalc.marginRequired = idealNotionalUSD * (inpMarginPercent / 100.0);
+   g_IdealCalc.buyingPowerPercent = (g_IdealCalc.marginRequired / inpAccountSize) * 100.0;
+   g_IdealCalc.returnOnMargin = g_IdealCalc.marginRequired > 0 ? (g_IdealCalc.netTP / g_IdealCalc.marginRequired) * 100.0 : 0;
+   
+   //--- CONSERVATIVE CALCULATION (With Entry Slippage)
+   double effectiveSL = slPips + inpEntrySlippage;
+   double conservativeTotalPips = effectiveSL + inpExitSlippage;
+   
+   g_ConservativeCalc.baseSLPips = slPips;  // Store base SL
+   g_ConservativeCalc.slPips = effectiveSL;
+   g_ConservativeCalc.lotSize = riskAmount / ((conservativeTotalPips * pipValuePerLot) + inpCommissionPerLot);
+   g_ConservativeCalc.commission = g_ConservativeCalc.lotSize * inpCommissionPerLot;
+   g_ConservativeCalc.priceRisk = g_ConservativeCalc.lotSize * conservativeTotalPips * pipValuePerLot;
+   g_ConservativeCalc.totalRisk = g_ConservativeCalc.priceRisk + g_ConservativeCalc.commission;
+   g_ConservativeCalc.riskPercent = (g_ConservativeCalc.totalRisk / inpAccountSize) * 100.0;
+   // Entry price accounting for slippage based on direction
+   g_ConservativeCalc.entryPrice = isLongTrade ? (currentPrice + (inpEntrySlippage * g_PipValue)) : (currentPrice - (inpEntrySlippage * g_PipValue));
+   g_ConservativeCalc.slPrice = slPrice;
+   
+   // Break-even calculation
+   double conservativeTotalFees = g_ConservativeCalc.commission + (g_ConservativeCalc.lotSize * inpExitSlippage * pipValuePerLot);
+   g_ConservativeCalc.breakEvenPips = conservativeTotalFees / (g_ConservativeCalc.lotSize * pipValuePerLot);
+
+   // Pip distance calculation
+   g_ConservativeCalc.dollarPerPip = g_ConservativeCalc.lotSize * pipValuePerLot;
+   g_ConservativeCalc.tpPipDistance = (g_ConservativeCalc.dollarPerPip > 0) ? (g_ConservativeCalc.grossTP / g_ConservativeCalc.dollarPerPip) : 0;
+
+   // Margin calculation
+   double conservativeContractValue = g_ConservativeCalc.lotSize * 100000;
+   double conservativeNotionalUSD = conservativeContractValue * currentPrice;
+   g_ConservativeCalc.marginRequired = conservativeNotionalUSD * (inpMarginPercent / 100.0);
+   g_ConservativeCalc.buyingPowerPercent = (g_ConservativeCalc.marginRequired / inpAccountSize) * 100.0;
+   g_ConservativeCalc.returnOnMargin = g_ConservativeCalc.marginRequired > 0 ? (g_ConservativeCalc.netTP / g_ConservativeCalc.marginRequired) * 100.0 : 0;
+   
+   //--- PARTIAL EXITS CALCULATION
+   CalculatePartialExits(g_IdealCalc, pipValuePerLot, isLongTrade);
+   CalculatePartialExits(g_ConservativeCalc, pipValuePerLot, isLongTrade);
+}
+
+//+------------------------------------------------------------------+
+//| Calculate Panel Height (shared function)                         |
+//+------------------------------------------------------------------+
+int GetPanelHeight()
+{
+   // If manual height override is set, use it
+   if(inpPanelHeight > 0)
+      return inpPanelHeight;
+
+   // Otherwise, auto-calculate based on number of levels and row height
+   int baseRows = 24;
+   int additionalRows = 0;
+
+   if(inpNumberOfLevels == 3)
+      additionalRows = 8;  // Partial Exits with 3 levels
+   else
+      additionalRows = 6;  // Partial Exits with 2 levels
+
+   return (baseRows + additionalRows) * inpRowHeight + (inpPanelPadding * 2);
+}
+
+//+------------------------------------------------------------------+
+//| Generate Divider Line (adjustable via settings)                  |
+//+------------------------------------------------------------------+
+string GetDivider()
+{
+   // Build divider string based on inpDividerLength parameter
+   string divider = "";
+   for(int i = 0; i < inpDividerLength; i++)
+      divider += "─";
+
+   return divider;
+}
+
+//+------------------------------------------------------------------+
+//| Create Information Panel                                          |
+//+------------------------------------------------------------------+
+void CreatePanel()
+{
+   if(!inpShowPanel) return;
+
+   int x = inpPanelX;
+   int y = inpPanelY;
+   int width = inpPanelWidth;
+   int panelHeight = GetPanelHeight();
+
+   // Create background rectangle - use solid color, no transparency for RECTANGLE_LABEL
+   ObjectCreate(0, g_PanelName, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, g_PanelName, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, g_PanelName, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, g_PanelName, OBJPROP_XSIZE, width);
+   ObjectSetInteger(0, g_PanelName, OBJPROP_YSIZE, panelHeight);
+   ObjectSetInteger(0, g_PanelName, OBJPROP_BGCOLOR, inpPanelBgColor);
+   ObjectSetInteger(0, g_PanelName, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+   ObjectSetInteger(0, g_PanelName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, g_PanelName, OBJPROP_COLOR, clrBlack);
+   ObjectSetInteger(0, g_PanelName, OBJPROP_STYLE, STYLE_SOLID);
+   ObjectSetInteger(0, g_PanelName, OBJPROP_WIDTH, 1);
+   ObjectSetInteger(0, g_PanelName, OBJPROP_BACK, false);  // Changed to false so it's on top
+   ObjectSetInteger(0, g_PanelName, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, g_PanelName, OBJPROP_SELECTED, false);
+   ObjectSetInteger(0, g_PanelName, OBJPROP_HIDDEN, true);
+}
+
+//+------------------------------------------------------------------+
+//| Update Information Panel                                          |
+//+------------------------------------------------------------------+
+void UpdatePanel()
+{
+   if(!inpShowPanel) return;
+
+   int x = inpPanelX + inpPanelPadding;
+   int y = inpPanelY + inpPanelPadding;
+   int rowHeight = inpRowHeight;
+   int currentRow = 0;
+   
+   // Get the display calculation based on mode
+   RiskCalculation display = (inpDisplayMode == DISPLAY_CONSERVATIVE) ? g_ConservativeCalc : g_IdealCalc;
+   RiskCalculation alternate = (inpDisplayMode == DISPLAY_CONSERVATIVE) ? g_IdealCalc : g_ConservativeCalc;
+   string modeLabel = (inpDisplayMode == DISPLAY_CONSERVATIVE) ? " (Conservative)" : " (Ideal)";
+   string altModeLabel = (inpDisplayMode == DISPLAY_CONSERVATIVE) ? " (Ideal)" : " (Conservative)";
+
+   // Lot Size (Panel starts immediately - no title)
+   CreateLabel("LotSizeLabel", "Lot Size:", x, y + (currentRow * rowHeight), inpPanelTextColor, inpFontSizeBold, "Arial Bold");
+   CreateLabel("LotSizeValue", DoubleToString(display.lotSize, 2), x + 180, y + (currentRow * rowHeight), clrBlue, inpFontSizeBold, "Arial Bold");
+   currentRow++;
+   
+   if(inpShowAlternateLotSize)
+   {
+      CreateLabel("AltLotSizeLabel", "Lot Size" + altModeLabel + ":", x, y + (currentRow * rowHeight), inpPanelTextColor, inpFontSizeNormal, "Arial");
+      color altColor = (inpDisplayMode == DISPLAY_CONSERVATIVE) ? clrDodgerBlue : clrOrangeRed;
+      CreateLabel("AltLotSizeValue", DoubleToString(alternate.lotSize, 2), x + 180, y + (currentRow * rowHeight), altColor, inpFontSizeNormal, "Arial");
+      currentRow++;
+   }
+   
+   // Pip Value Display
+   if(inpShowPipValue)
+   {
+      double pipValuePerLot = (inpPipValueMode == PIP_MANUAL) ? inpManualPipValue : (g_PointValue * (g_PipValue / g_Point));
+      string pipValueLabel = (inpPipValueMode == PIP_MANUAL) ? "Pip Value (Manual):" : "Pip Value (Auto):";
+      CreateLabel("PipValueLabel", pipValueLabel, x, y + (currentRow * rowHeight), inpPanelTextColor, inpFontSizeNormal, "Arial");
+      CreateLabel("PipValueValue", "$" + DoubleToString(pipValuePerLot, 2), x + 180, y + (currentRow * rowHeight), inpPanelTextColor, inpFontSizeNormal, "Arial");
+      currentRow++;
+   }
+   
+   currentRow++;
+   CreateLabel("Divider1", GetDivider(), x, y + (currentRow * rowHeight), clrGray, inpFontSizeNormal, "Arial");
+   currentRow++;
+   
+   // Stop Loss Structure
+   string slModeText = (inpSLMode == SL_MANUAL) ? "Base SL:" : "Base SL (Dynamic):";
+   CreateLabel("SLLabel", slModeText, x, y + (currentRow * rowHeight), inpPanelTextColor, inpFontSizeNormal, "Arial");
+   CreateLabel("SLValue", DoubleToString(display.baseSLPips, 1) + " pips", x + 180, y + (currentRow * rowHeight), clrRed, inpFontSizeNormal, "Arial");
+   currentRow++;
+   
+   double totalRiskPips = (inpDisplayMode == DISPLAY_CONSERVATIVE) ? (display.slPips + inpExitSlippage) : (display.slPips + inpExitSlippage);
+   CreateLabel("TotalRiskPipsLabel", "Total Risk Distance:", x, y + (currentRow * rowHeight), inpPanelTextColor, inpFontSizeNormal, "Arial");
+   CreateLabel("TotalRiskPipsValue", DoubleToString(totalRiskPips, 1) + " pips", x + 180, y + (currentRow * rowHeight), clrRed, inpFontSizeNormal, "Arial");
+   currentRow++;
+   
+   // Take Profit Display
+   if(inpShowTP)
+   {
+      // Show partial exits summary
+      double exitPercent3 = (inpNumberOfLevels == 3) ? (100 - inpExitPercent1 - inpExitPercent2) : 0;
+
+      CreateLabel("TPLabel", "Partial Exits:", x, y + (currentRow * rowHeight), inpPanelTextColor, inpFontSizeNormal, "Arial");
+      CreateLabel("TPValue", IntegerToString(inpNumberOfLevels) + " Levels", x + 180, y + (currentRow * rowHeight), clrGreen, inpFontSizeNormal, "Arial");
+      currentRow++;
+   }
+   
+   CreateLabel("BELabel", "Break-even:", x, y + (currentRow * rowHeight), inpPanelTextColor, inpFontSizeNormal, "Arial");
+   CreateLabel("BEValue", DoubleToString(display.breakEvenPips, 2) + " pips", x + 180, y + (currentRow * rowHeight), inpPanelTextColor, inpFontSizeNormal, "Arial");
+   currentRow++;
+   
+   currentRow++;
+   CreateLabel("Divider2", GetDivider(), x, y + (currentRow * rowHeight), clrGray, inpFontSizeNormal, "Arial");
+   currentRow++;
+   
+   // Risk Breakdown
+   CreateLabel("PriceRiskLabel", "Price Risk:", x, y + (currentRow * rowHeight), inpPanelTextColor, inpFontSizeNormal, "Arial");
+   CreateLabel("PriceRiskValue", "$" + DoubleToString(display.priceRisk, 2), x + 180, y + (currentRow * rowHeight), inpPanelTextColor, inpFontSizeNormal, "Arial");
+   currentRow++;
+   
+   CreateLabel("CommLabel", "Commission:", x, y + (currentRow * rowHeight), inpPanelTextColor, inpFontSizeNormal, "Arial");
+   CreateLabel("CommValue", "$" + DoubleToString(display.commission, 2), x + 180, y + (currentRow * rowHeight), inpPanelTextColor, inpFontSizeNormal, "Arial");
+   currentRow++;
+   
+   CreateLabel("TotalRiskLabel", "Total Risk:", x, y + (currentRow * rowHeight), inpPanelTextColor, inpFontSizeBold, "Arial Bold");
+   CreateLabel("TotalRiskValue", "$" + DoubleToString(display.totalRisk, 2), x + 180, y + (currentRow * rowHeight), clrRed, inpFontSizeBold, "Arial Bold");
+   currentRow++;
+   
+   CreateLabel("RiskPercentLabel", "Actual Risk %:", x, y + (currentRow * rowHeight), inpPanelTextColor, inpFontSizeNormal, "Arial");
+   CreateLabel("RiskPercentValue", DoubleToString(display.riskPercent, 2) + "%", x + 180, y + (currentRow * rowHeight), clrRed, inpFontSizeNormal, "Arial");
+   currentRow++;
+   
+   if(inpShowTP)
+   {
+      // Show partial exits details
+      double exitPercent3 = (inpNumberOfLevels == 3) ? (100 - inpExitPercent1 - inpExitPercent2) : 0;
+
+      CreateLabel("PartialTitle", "Partial Exits Breakdown:", x, y + (currentRow * rowHeight), inpPanelTextColor, inpFontSizeNormal, "Arial Bold");
+      currentRow++;
+
+      // Level 1 - condensed
+      CreateLabel("Level1Label", "L1: " + DoubleToString(inpExitPercent1, 0) + "% (" + DoubleToString(display.partialLots1, 2) + " lots)", x, y + (currentRow * rowHeight), inpPanelTextColor, inpFontSizeNormal, "Arial");
+      currentRow++;
+      CreateLabel("Level1Pips", "  +" + DoubleToString(display.partialPips1, 1) + " pips", x, y + (currentRow * rowHeight), inpPanelTextColor, inpFontSizeNormal, "Arial");
+      CreateLabel("Level1Net", "$" + DoubleToString(display.partialNetPnL1, 2), x + 180, y + (currentRow * rowHeight), clrGreen, inpFontSizeNormal, "Arial");
+      currentRow++;
+
+      // Level 2 - condensed
+      CreateLabel("Level2Label", "L2: " + DoubleToString(inpExitPercent2, 0) + "% (" + DoubleToString(display.partialLots2, 2) + " lots)", x, y + (currentRow * rowHeight), inpPanelTextColor, inpFontSizeNormal, "Arial");
+      currentRow++;
+      CreateLabel("Level2Pips", "  +" + DoubleToString(display.partialPips2, 1) + " pips", x, y + (currentRow * rowHeight), inpPanelTextColor, inpFontSizeNormal, "Arial");
+      CreateLabel("Level2Net", "$" + DoubleToString(display.partialNetPnL2, 2), x + 180, y + (currentRow * rowHeight), clrGreen, inpFontSizeNormal, "Arial");
+      currentRow++;
+
+      // Level 3 (if enabled) - condensed
+      if(inpNumberOfLevels == 3)
+      {
+         CreateLabel("Level3Label", "L3: " + DoubleToString(exitPercent3, 0) + "% (" + DoubleToString(display.partialLots3, 2) + " lots)", x, y + (currentRow * rowHeight), inpPanelTextColor, inpFontSizeNormal, "Arial");
+         currentRow++;
+         CreateLabel("Level3Pips", "  +" + DoubleToString(display.partialPips3, 1) + " pips", x, y + (currentRow * rowHeight), inpPanelTextColor, inpFontSizeNormal, "Arial");
+         CreateLabel("Level3Net", "$" + DoubleToString(display.partialNetPnL3, 2), x + 180, y + (currentRow * rowHeight), clrGreen, inpFontSizeNormal, "Arial");
+         currentRow++;
+      }
+
+      CreateLabel("PartialTotalLabel", "Total Net P&L:", x, y + (currentRow * rowHeight), inpPanelTextColor, inpFontSizeBold, "Arial Bold");
+      CreateLabel("PartialTotalValue", "$" + DoubleToString(display.partialTotalNetPnL, 2), x + 180, y + (currentRow * rowHeight), clrGreen, inpFontSizeBold, "Arial Bold");
+      currentRow++;
+   }
+   
+   currentRow++;
+   CreateLabel("Divider3", GetDivider(), x, y + (currentRow * rowHeight), clrGray, inpFontSizeNormal, "Arial");
+   currentRow++;
+   
+   // Margin Info
+   CreateLabel("MarginLabel", "Margin Required:", x, y + (currentRow * rowHeight), inpPanelTextColor, inpFontSizeNormal, "Arial");
+   CreateLabel("MarginValue", "$" + DoubleToString(display.marginRequired, 2), x + 180, y + (currentRow * rowHeight), inpPanelTextColor, inpFontSizeNormal, "Arial");
+   currentRow++;
+   
+   CreateLabel("BuyingPowerLabel", "Buying Power:", x, y + (currentRow * rowHeight), inpPanelTextColor, inpFontSizeNormal, "Arial");
+   CreateLabel("BuyingPowerValue", DoubleToString(display.buyingPowerPercent, 2) + "%", x + 180, y + (currentRow * rowHeight), clrGreen, inpFontSizeNormal, "Arial");
+   currentRow++;
+   
+   if(inpShowReturnOnMargin)
+   {
+      CreateLabel("ROMLabel", "Return on Margin:", x, y + (currentRow * rowHeight), inpPanelTextColor, inpFontSizeNormal, "Arial");
+      color romColor = (display.returnOnMargin > 0) ? clrGreen : clrRed;
+      CreateLabel("ROMValue", DoubleToString(display.returnOnMargin, 2) + "%", x + 180, y + (currentRow * rowHeight), romColor, inpFontSizeNormal, "Arial");
+      currentRow++;
+   }
+   
+   ChartRedraw(0);
+}
+
+//+------------------------------------------------------------------+
+//| Create Label Helper                                              |
+//+------------------------------------------------------------------+
+void CreateLabel(string name, string text, int x, int y, color clr, int fontSize = 8, string font = "Arial")
+{
+   string objName = g_PanelName + "_" + name;
+   
+   if(ObjectFind(0, objName) < 0)
+   {
+      ObjectCreate(0, objName, OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, objName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+      ObjectSetInteger(0, objName, OBJPROP_ANCHOR, ANCHOR_LEFT_UPPER);
+      ObjectSetInteger(0, objName, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, objName, OBJPROP_HIDDEN, true);
+   }
+   
+   ObjectSetInteger(0, objName, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, objName, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, objName, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, objName, OBJPROP_FONTSIZE, fontSize);
+   ObjectSetString(0, objName, OBJPROP_FONT, font);
+   ObjectSetString(0, objName, OBJPROP_TEXT, text);
+}
+
+//+------------------------------------------------------------------+
+//| Delete Panel                                                      |
+//+------------------------------------------------------------------+
+void DeletePanel()
+{
+   ObjectsDeleteAll(0, g_PanelName);
+}
+
+//+------------------------------------------------------------------+
+//| Create Buy/Sell Buttons                                          |
+//+------------------------------------------------------------------+
+void CreateButtons()
+{
+   // Get panel height using shared function
+   int panelHeight = GetPanelHeight();
+
+   // Position buttons below panel with configurable spacing
+   int buttonY = inpPanelY + panelHeight + inpButtonSpacing;
+   
+   // Buy Button
+   ObjectCreate(0, g_BuyButtonName, OBJ_BUTTON, 0, 0, 0);
+   ObjectSetInteger(0, g_BuyButtonName, OBJPROP_XDISTANCE, inpPanelX);
+   ObjectSetInteger(0, g_BuyButtonName, OBJPROP_YDISTANCE, buttonY);
+   ObjectSetInteger(0, g_BuyButtonName, OBJPROP_XSIZE, inpButtonWidth);
+   ObjectSetInteger(0, g_BuyButtonName, OBJPROP_YSIZE, inpButtonHeight);
+   ObjectSetInteger(0, g_BuyButtonName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, g_BuyButtonName, OBJPROP_BGCOLOR, inpBuyButtonColor);
+   ObjectSetInteger(0, g_BuyButtonName, OBJPROP_COLOR, clrWhite);
+   ObjectSetInteger(0, g_BuyButtonName, OBJPROP_FONTSIZE, 10);
+   ObjectSetString(0, g_BuyButtonName, OBJPROP_FONT, "Arial Bold");
+   ObjectSetString(0, g_BuyButtonName, OBJPROP_TEXT, "BUY");
+   ObjectSetInteger(0, g_BuyButtonName, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, g_BuyButtonName, OBJPROP_HIDDEN, true);
+   
+   // Sell Button
+   ObjectCreate(0, g_SellButtonName, OBJ_BUTTON, 0, 0, 0);
+   ObjectSetInteger(0, g_SellButtonName, OBJPROP_XDISTANCE, inpPanelX + inpButtonWidth + 10);
+   ObjectSetInteger(0, g_SellButtonName, OBJPROP_YDISTANCE, buttonY);
+   ObjectSetInteger(0, g_SellButtonName, OBJPROP_XSIZE, inpButtonWidth);
+   ObjectSetInteger(0, g_SellButtonName, OBJPROP_YSIZE, inpButtonHeight);
+   ObjectSetInteger(0, g_SellButtonName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, g_SellButtonName, OBJPROP_BGCOLOR, inpSellButtonColor);
+   ObjectSetInteger(0, g_SellButtonName, OBJPROP_COLOR, clrWhite);
+   ObjectSetInteger(0, g_SellButtonName, OBJPROP_FONTSIZE, 10);
+   ObjectSetString(0, g_SellButtonName, OBJPROP_FONT, "Arial Bold");
+   ObjectSetString(0, g_SellButtonName, OBJPROP_TEXT, "SELL");
+   ObjectSetInteger(0, g_SellButtonName, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, g_SellButtonName, OBJPROP_HIDDEN, true);
+
+   // Second row of buttons - positioned below Buy/Sell
+   int buttonY2 = buttonY + inpButtonHeight + 10; // 10px spacing between rows
+
+   // Move to BE Button
+   ObjectCreate(0, g_MoveToBEButtonName, OBJ_BUTTON, 0, 0, 0);
+   ObjectSetInteger(0, g_MoveToBEButtonName, OBJPROP_XDISTANCE, inpPanelX);
+   ObjectSetInteger(0, g_MoveToBEButtonName, OBJPROP_YDISTANCE, buttonY2);
+   ObjectSetInteger(0, g_MoveToBEButtonName, OBJPROP_XSIZE, inpButtonWidth);
+   ObjectSetInteger(0, g_MoveToBEButtonName, OBJPROP_YSIZE, inpButtonHeight);
+   ObjectSetInteger(0, g_MoveToBEButtonName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, g_MoveToBEButtonName, OBJPROP_BGCOLOR, inpMoveToBEButtonColor);
+   ObjectSetInteger(0, g_MoveToBEButtonName, OBJPROP_COLOR, clrWhite);
+   ObjectSetInteger(0, g_MoveToBEButtonName, OBJPROP_FONTSIZE, 9);
+   ObjectSetString(0, g_MoveToBEButtonName, OBJPROP_FONT, "Arial Bold");
+   ObjectSetString(0, g_MoveToBEButtonName, OBJPROP_TEXT, "BREAKEVEN");
+   ObjectSetInteger(0, g_MoveToBEButtonName, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, g_MoveToBEButtonName, OBJPROP_HIDDEN, true);
+
+   // Close All Button
+   ObjectCreate(0, g_CloseAllButtonName, OBJ_BUTTON, 0, 0, 0);
+   ObjectSetInteger(0, g_CloseAllButtonName, OBJPROP_XDISTANCE, inpPanelX + inpButtonWidth + 10);
+   ObjectSetInteger(0, g_CloseAllButtonName, OBJPROP_YDISTANCE, buttonY2);
+   ObjectSetInteger(0, g_CloseAllButtonName, OBJPROP_XSIZE, inpButtonWidth);
+   ObjectSetInteger(0, g_CloseAllButtonName, OBJPROP_YSIZE, inpButtonHeight);
+   ObjectSetInteger(0, g_CloseAllButtonName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, g_CloseAllButtonName, OBJPROP_BGCOLOR, inpCloseAllButtonColor);
+   ObjectSetInteger(0, g_CloseAllButtonName, OBJPROP_COLOR, clrWhite);
+   ObjectSetInteger(0, g_CloseAllButtonName, OBJPROP_FONTSIZE, 10);
+   ObjectSetString(0, g_CloseAllButtonName, OBJPROP_FONT, "Arial Bold");
+   ObjectSetString(0, g_CloseAllButtonName, OBJPROP_TEXT, "CLOSE ALL");
+   ObjectSetInteger(0, g_CloseAllButtonName, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, g_CloseAllButtonName, OBJPROP_HIDDEN, true);
+}
+
+//+------------------------------------------------------------------+
+//| Delete Buttons                                                    |
+//+------------------------------------------------------------------+
+void DeleteButtons()
+{
+   ObjectDelete(0, g_BuyButtonName);
+   ObjectDelete(0, g_SellButtonName);
+   ObjectDelete(0, g_MoveToBEButtonName);
+   ObjectDelete(0, g_CloseAllButtonName);
+}
+
+//+------------------------------------------------------------------+
+//| Get Active TP Settings (runtime or input parameters)             |
+//+------------------------------------------------------------------+
+int GetActiveNumberOfLevels()
+{
+   return (g_NumberOfLevels > 0) ? g_NumberOfLevels : inpNumberOfLevels;
+}
+
+double GetActiveExitPercent1()
+{
+   return (g_ExitPercent1 > 0) ? g_ExitPercent1 : inpExitPercent1;
+}
+
+double GetActiveExitPercent2()
+{
+   return (g_ExitPercent2 > 0) ? g_ExitPercent2 : inpExitPercent2;
+}
+
+//+------------------------------------------------------------------+
+//| Calculate Partial Exits                                          |
+//+------------------------------------------------------------------+
+void CalculatePartialExits(RiskCalculation &calc, double pipValuePerLot, bool isLongTrade)
+{
+   // Get active TP settings
+   int numLevels = GetActiveNumberOfLevels();
+   double exitPct1 = GetActiveExitPercent1();
+   double exitPct2 = GetActiveExitPercent2();
+
+   // Calculate exit percentages based on number of levels
+   double exitPercent2 = (numLevels >= 2) ? exitPct2 : 0;
+   double exitPercent3 = (numLevels == 3) ? (100 - exitPct1 - exitPct2) : 0;
+   if(exitPercent3 < 0) exitPercent3 = 0;
+
+   // Calculate lot sizes for each level
+   calc.partialLots1 = calc.lotSize * (exitPct1 / 100.0);
+   calc.partialLots2 = (numLevels >= 2) ? calc.lotSize * (exitPercent2 / 100.0) : 0;
+   calc.partialLots3 = (numLevels == 3) ? calc.lotSize * (exitPercent3 / 100.0) : 0;
+
+   // Update global lot sizes for INI sync (unless we're reloading from file)
+   if(!g_IsReloadingFromFile)
+   {
+      g_PartialLots1 = calc.partialLots1;
+      g_PartialLots2 = calc.partialLots2;
+      g_PartialLots3 = calc.partialLots3;
+   }
+
+   // Always use draggable lines - Use global variables if set, otherwise use reasonable defaults
+   if(g_PartialTP1Price > 0)
+   {
+      calc.partialTP1Price = g_PartialTP1Price;
+   }
+   else
+   {
+      // Default: 1x SL distance as starting point
+      double tp1Pips = calc.slPips * 1.0;
+      calc.partialTP1Price = isLongTrade ? (calc.entryPrice + (tp1Pips * g_PipValue)) : (calc.entryPrice - (tp1Pips * g_PipValue));
+   }
+
+   if(numLevels >= 2)
+   {
+      if(g_PartialTP2Price > 0)
+      {
+         calc.partialTP2Price = g_PartialTP2Price;
+      }
+      else
+      {
+         // Default: 1.5x SL distance
+         double tp2Pips = calc.slPips * 1.5;
+         calc.partialTP2Price = isLongTrade ? (calc.entryPrice + (tp2Pips * g_PipValue)) : (calc.entryPrice - (tp2Pips * g_PipValue));
+      }
+   }
+   else
+   {
+      calc.partialTP2Price = 0;
+   }
+
+   if(numLevels == 3)
+   {
+      if(g_PartialTP3Price > 0)
+      {
+         calc.partialTP3Price = g_PartialTP3Price;
+      }
+      else
+      {
+         // Default: 2x SL distance
+         double tp3Pips = calc.slPips * 2.0;
+         calc.partialTP3Price = isLongTrade ? (calc.entryPrice + (tp3Pips * g_PipValue)) : (calc.entryPrice - (tp3Pips * g_PipValue));
+      }
+   }
+   else
+   {
+      calc.partialTP3Price = 0;
+   }
+
+   // Calculate pips from manual prices
+   if(isLongTrade)
+   {
+      calc.partialPips1 = (calc.partialTP1Price - calc.entryPrice) / g_PipValue;
+      calc.partialPips2 = (numLevels >= 2) ? (calc.partialTP2Price - calc.entryPrice) / g_PipValue : 0;
+      calc.partialPips3 = (numLevels == 3) ? (calc.partialTP3Price - calc.entryPrice) / g_PipValue : 0;
+   }
+   else
+   {
+      calc.partialPips1 = (calc.entryPrice - calc.partialTP1Price) / g_PipValue;
+      calc.partialPips2 = (numLevels >= 2) ? (calc.entryPrice - calc.partialTP2Price) / g_PipValue : 0;
+      calc.partialPips3 = (numLevels == 3) ? (calc.entryPrice - calc.partialTP3Price) / g_PipValue : 0;
+   }
+
+   // Calculate P&L for manual levels
+   double totalFees = (calc.lotSize * inpCommissionPerLot) + (calc.lotSize * inpExitSlippage * pipValuePerLot);
+   double partialFees1 = totalFees * (exitPct1 / 100.0);
+   double partialFees2 = (numLevels >= 2) ? totalFees * (exitPercent2 / 100.0) : 0;
+   double partialFees3 = (numLevels == 3) ? totalFees * (exitPercent3 / 100.0) : 0;
+
+   calc.partialGrossPnL1 = calc.partialLots1 * calc.partialPips1 * pipValuePerLot;
+   calc.partialGrossPnL2 = (numLevels >= 2) ? calc.partialLots2 * calc.partialPips2 * pipValuePerLot : 0;
+   calc.partialGrossPnL3 = (numLevels == 3) ? calc.partialLots3 * calc.partialPips3 * pipValuePerLot : 0;
+
+   calc.partialNetPnL1 = calc.partialGrossPnL1 - partialFees1;
+   calc.partialNetPnL2 = (numLevels >= 2) ? calc.partialGrossPnL2 - partialFees2 : 0;
+   calc.partialNetPnL3 = (numLevels == 3) ? calc.partialGrossPnL3 - partialFees3 : 0;
+
+   calc.partialTotalNetPnL = (numLevels == 3) ?
+      (calc.partialNetPnL1 + calc.partialNetPnL2 + calc.partialNetPnL3) :
+      (numLevels == 2) ?
+      (calc.partialNetPnL1 + calc.partialNetPnL2) :
+      calc.partialNetPnL1;
+
+   // Pip distance calculations (based on gross profit)
+   double dollarPerPip = calc.lotSize * pipValuePerLot;
+   calc.partialPipDistance1 = (dollarPerPip > 0) ? (calc.partialGrossPnL1 / dollarPerPip) : 0;
+   calc.partialPipDistance2 = (numLevels >= 2 && dollarPerPip > 0) ? (calc.partialGrossPnL2 / dollarPerPip) : 0;
+   calc.partialPipDistance3 = (numLevels == 3 && dollarPerPip > 0) ? (calc.partialGrossPnL3 / dollarPerPip) : 0;
+
+   double totalGrossPnL = (numLevels == 3) ?
+      (calc.partialGrossPnL1 + calc.partialGrossPnL2 + calc.partialGrossPnL3) :
+      (numLevels == 2) ?
+      (calc.partialGrossPnL1 + calc.partialGrossPnL2) :
+      calc.partialGrossPnL1;
+   calc.partialTotalPipDistance = (dollarPerPip > 0) ? (totalGrossPnL / dollarPerPip) : 0;
+}
+
+//+------------------------------------------------------------------+
+//| Calculate Break-Even Pips at Order Placement                     |
+//+------------------------------------------------------------------+
+double CalculateBEPipsForOrder(double lotSize)
+{
+   // Calculate actual commission for this position
+   double actualCommission = lotSize * inpCommissionPerLot;
+
+   // Calculate pip value
+   double pipValuePerLot = (inpPipValueMode == PIP_MANUAL) ? inpManualPipValue : (g_PointValue * (g_PipValue / g_Point));
+
+   // Calculate actual exit slippage cost
+   double actualExitSlippageCost = lotSize * inpExitSlippage * pipValuePerLot;
+
+   // Calculate total fees
+   double actualTotalFees = actualCommission + actualExitSlippageCost;
+
+   // Calculate actual BE distance in pips
+   double actualBEPips = actualTotalFees / (lotSize * pipValuePerLot);
+
+   return actualBEPips;
+}
+
+//+------------------------------------------------------------------+
+//| Get Execution Price Based on Mode                                |
+//| Returns the price to use for checking if TP/SL levels are hit    |
+//+------------------------------------------------------------------+
+double GetExecutionPrice(ENUM_POSITION_TYPE posType, bool isClosingPosition)
+{
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+
+   // VISUAL mode: Use close[0] logic from price-line.mq5
+   // This matches exactly what's displayed on the chart horizontal price line
+   if(inpExecutionMode == EXECUTE_VISUAL)
+   {
+      double last = iClose(_Symbol, PERIOD_CURRENT, 0);
+      return last;
+   }
+
+   // BIDASK mode: Use correct execution price accounting for spread
+   // For closing BUY position: Need to SELL, so use BID
+   // For closing SELL position: Need to BUY, so use ASK
+   if(isClosingPosition)
+   {
+      return (posType == POSITION_TYPE_BUY) ? bid : ask;
+   }
+   else
+   {
+      // For opening positions
+      return (posType == POSITION_TYPE_BUY) ? ask : bid;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Execute Buy Order                                                 |
+//+------------------------------------------------------------------+
+void ExecuteBuyOrder()
+{
+   RiskCalculation calc = (inpDisplayMode == DISPLAY_CONSERVATIVE) ? g_ConservativeCalc : g_IdealCalc;
+
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double sl = NormalizeDouble(calc.slPrice, g_Digits);
+   double lots = NormalizeDouble(calc.lotSize, 2);
+
+   // Validate lot size
+   double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+   double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+
+   if(lots < minLot) lots = minLot;
+   if(lots > maxLot) lots = maxLot;
+   lots = MathFloor(lots / lotStep) * lotStep;
+
+   trade.SetExpertMagicNumber(123456);
+   trade.SetDeviationInPoints(10);
+
+   // Calculate and lock in BE pips at order placement
+   double bePips = CalculateBEPipsForOrder(lots);
+   string baseComment = (inpDisplayMode == DISPLAY_CONSERVATIVE) ? "RM_Buy_CONS" : "RM_Buy_IDEAL";
+   string commentWithBE = baseComment + "|BE:" + DoubleToString(bePips, 2);
+
+   bool result = false;
+   double tp = 0;
+
+   // Determine TP based on inpPlaceSLTP setting
+   if(inpPlaceSLTP)
+   {
+      // Partial Exits: Place main order with SL only, then place limit orders for each level
+      result = trade.Buy(lots, _Symbol, ask, sl, 0, commentWithBE);
+
+      if(result)
+      {
+         Print("BUY Order Executed: Lot Size = ", lots, ", SL = ", sl);
+
+         // Now place SELL_LIMIT orders for partial exits
+         bool allLimitsPlaced = true;
+
+         // TP1
+         double tp1Lots = NormalizeDouble(calc.partialLots1, 2);
+         if(tp1Lots < minLot) tp1Lots = minLot;
+         if(tp1Lots > maxLot) tp1Lots = maxLot;
+         tp1Lots = MathFloor(tp1Lots / lotStep) * lotStep;
+
+         double tp1Price = NormalizeDouble(calc.partialTP1Price, g_Digits);
+         bool tp1Result = trade.OrderOpen(_Symbol, ORDER_TYPE_SELL_LIMIT, tp1Lots, 0, tp1Price, 0, 0, ORDER_TIME_GTC, 0, "TP1 @ " + DoubleToString(calc.partialPips1, 1) + " pips");
+
+         if(tp1Result)
+            Print("TP1 SELL_LIMIT placed: ", tp1Lots, " lots @ ", tp1Price);
+         else
+         {
+            Print("TP1 SELL_LIMIT failed: ", trade.ResultRetcodeDescription());
+            allLimitsPlaced = false;
+         }
+
+         // TP2 (if 2 or more levels)
+         if(inpNumberOfLevels >= 2)
+         {
+            double tp2Lots = NormalizeDouble(calc.partialLots2, 2);
+            if(tp2Lots < minLot) tp2Lots = minLot;
+            if(tp2Lots > maxLot) tp2Lots = maxLot;
+            tp2Lots = MathFloor(tp2Lots / lotStep) * lotStep;
+
+            double tp2Price = NormalizeDouble(calc.partialTP2Price, g_Digits);
+            bool tp2Result = trade.OrderOpen(_Symbol, ORDER_TYPE_SELL_LIMIT, tp2Lots, 0, tp2Price, 0, 0, ORDER_TIME_GTC, 0, "TP2 @ " + DoubleToString(calc.partialPips2, 1) + " pips");
+
+            if(tp2Result)
+               Print("TP2 SELL_LIMIT placed: ", tp2Lots, " lots @ ", tp2Price);
+            else
+            {
+               Print("TP2 SELL_LIMIT failed: ", trade.ResultRetcodeDescription());
+               allLimitsPlaced = false;
+            }
+         }
+
+         // TP3 (if enabled)
+         if(inpNumberOfLevels == 3)
+         {
+            double tp3Lots = NormalizeDouble(calc.partialLots3, 2);
+            if(tp3Lots < minLot) tp3Lots = minLot;
+            if(tp3Lots > maxLot) tp3Lots = maxLot;
+            tp3Lots = MathFloor(tp3Lots / lotStep) * lotStep;
+
+            double tp3Price = NormalizeDouble(calc.partialTP3Price, g_Digits);
+            bool tp3Result = trade.OrderOpen(_Symbol, ORDER_TYPE_SELL_LIMIT, tp3Lots, 0, tp3Price, 0, 0, ORDER_TIME_GTC, 0, "TP3 @ " + DoubleToString(calc.partialPips3, 1) + " pips");
+
+            if(tp3Result)
+               Print("TP3 SELL_LIMIT placed: ", tp3Lots, " lots @ ", tp3Price);
+            else
+            {
+               Print("TP3 SELL_LIMIT failed: ", trade.ResultRetcodeDescription());
+               allLimitsPlaced = false;
+            }
+         }
+
+         if(allLimitsPlaced)
+            Comment("OK BUY Order & Partial Exit Limits Placed Successfully!\nLot Size: ", lots, "\nSL: ", sl);
+         else
+            Comment("OK BUY Order Placed, but some Partial Exit Limits Failed!\nCheck Journal for details.");
+      }
+      else
+      {
+         Print("BUY Order Failed: ", trade.ResultRetcodeDescription());
+         Comment("✗ BUY Order Failed: ", trade.ResultRetcodeDescription());
+      }
+   }
+   else
+   {
+      // Don't place SL/TP with order
+      result = trade.Buy(lots, _Symbol, ask, 0, 0, commentWithBE);
+
+      if(result)
+      {
+         Print("BUY Order Executed: Lot Size = ", lots, " (No SL/TP)");
+         Comment("OK BUY Order Placed Successfully!\nLot Size: ", lots, "\n(No SL/TP placed)");
+      }
+      else
+      {
+         Print("BUY Order Failed: ", trade.ResultRetcodeDescription());
+         Comment("✗ BUY Order Failed: ", trade.ResultRetcodeDescription());
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Execute Sell Order                                                |
+//+------------------------------------------------------------------+
+void ExecuteSellOrder()
+{
+   RiskCalculation calc = (inpDisplayMode == DISPLAY_CONSERVATIVE) ? g_ConservativeCalc : g_IdealCalc;
+
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double sl = NormalizeDouble(calc.slPrice, g_Digits);
+   double lots = NormalizeDouble(calc.lotSize, 2);
+
+   // Validate lot size
+   double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+   double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+
+   if(lots < minLot) lots = minLot;
+   if(lots > maxLot) lots = maxLot;
+   lots = MathFloor(lots / lotStep) * lotStep;
+
+   trade.SetExpertMagicNumber(123456);
+   trade.SetDeviationInPoints(10);
+
+   // Calculate and lock in BE pips at order placement
+   double bePips = CalculateBEPipsForOrder(lots);
+   string baseComment = (inpDisplayMode == DISPLAY_CONSERVATIVE) ? "RM_Sell_CONS" : "RM_Sell_IDEAL";
+   string commentWithBE = baseComment + "|BE:" + DoubleToString(bePips, 2);
+
+   bool result = false;
+   double tp = 0;
+
+   // Determine TP based on inpPlaceSLTP setting
+   if(inpPlaceSLTP)
+   {
+      // Partial Exits: Place main order with SL only, then place limit orders for each level
+      result = trade.Sell(lots, _Symbol, bid, sl, 0, commentWithBE);
+
+      if(result)
+      {
+         Print("SELL Order Executed: Lot Size = ", lots, ", SL = ", sl);
+
+         // Now place BUY_LIMIT orders for partial exits
+         bool allLimitsPlaced = true;
+
+         // TP1
+         double tp1Lots = NormalizeDouble(calc.partialLots1, 2);
+         if(tp1Lots < minLot) tp1Lots = minLot;
+         if(tp1Lots > maxLot) tp1Lots = maxLot;
+         tp1Lots = MathFloor(tp1Lots / lotStep) * lotStep;
+
+         double tp1Price = NormalizeDouble(calc.partialTP1Price, g_Digits);
+         bool tp1Result = trade.OrderOpen(_Symbol, ORDER_TYPE_BUY_LIMIT, tp1Lots, 0, tp1Price, 0, 0, ORDER_TIME_GTC, 0, "TP1 @ " + DoubleToString(calc.partialPips1, 1) + " pips");
+
+         if(tp1Result)
+            Print("TP1 BUY_LIMIT placed: ", tp1Lots, " lots @ ", tp1Price);
+         else
+         {
+            Print("TP1 BUY_LIMIT failed: ", trade.ResultRetcodeDescription());
+            allLimitsPlaced = false;
+         }
+
+         // TP2 (if 2 or more levels)
+         if(inpNumberOfLevels >= 2)
+         {
+            double tp2Lots = NormalizeDouble(calc.partialLots2, 2);
+            if(tp2Lots < minLot) tp2Lots = minLot;
+            if(tp2Lots > maxLot) tp2Lots = maxLot;
+            tp2Lots = MathFloor(tp2Lots / lotStep) * lotStep;
+
+            double tp2Price = NormalizeDouble(calc.partialTP2Price, g_Digits);
+            bool tp2Result = trade.OrderOpen(_Symbol, ORDER_TYPE_BUY_LIMIT, tp2Lots, 0, tp2Price, 0, 0, ORDER_TIME_GTC, 0, "TP2 @ " + DoubleToString(calc.partialPips2, 1) + " pips");
+
+            if(tp2Result)
+               Print("TP2 BUY_LIMIT placed: ", tp2Lots, " lots @ ", tp2Price);
+            else
+            {
+               Print("TP2 BUY_LIMIT failed: ", trade.ResultRetcodeDescription());
+               allLimitsPlaced = false;
+            }
+         }
+
+         // TP3 (if enabled)
+         if(inpNumberOfLevels == 3)
+         {
+            double tp3Lots = NormalizeDouble(calc.partialLots3, 2);
+            if(tp3Lots < minLot) tp3Lots = minLot;
+            if(tp3Lots > maxLot) tp3Lots = maxLot;
+            tp3Lots = MathFloor(tp3Lots / lotStep) * lotStep;
+
+            double tp3Price = NormalizeDouble(calc.partialTP3Price, g_Digits);
+            bool tp3Result = trade.OrderOpen(_Symbol, ORDER_TYPE_BUY_LIMIT, tp3Lots, 0, tp3Price, 0, 0, ORDER_TIME_GTC, 0, "TP3 @ " + DoubleToString(calc.partialPips3, 1) + " pips");
+
+            if(tp3Result)
+               Print("TP3 BUY_LIMIT placed: ", tp3Lots, " lots @ ", tp3Price);
+            else
+            {
+               Print("TP3 BUY_LIMIT failed: ", trade.ResultRetcodeDescription());
+               allLimitsPlaced = false;
+            }
+         }
+
+         if(allLimitsPlaced)
+            Comment("OK SELL Order & Partial Exit Limits Placed Successfully!\nLot Size: ", lots, "\nSL: ", sl);
+         else
+            Comment("OK SELL Order Placed, but some Partial Exit Limits Failed!\nCheck Journal for details.");
+      }
+      else
+      {
+         Print("SELL Order Failed: ", trade.ResultRetcodeDescription());
+         Comment("✗ SELL Order Failed: ", trade.ResultRetcodeDescription());
+      }
+   }
+   else
+   {
+      // Don't place SL/TP with order
+      result = trade.Sell(lots, _Symbol, bid, 0, 0, commentWithBE);
+
+      if(result)
+      {
+         Print("SELL Order Executed: Lot Size = ", lots, " (No SL/TP)");
+         Comment("OK SELL Order Placed Successfully!\nLot Size: ", lots, "\n(No SL/TP placed)");
+      }
+      else
+      {
+         Print("SELL Order Failed: ", trade.ResultRetcodeDescription());
+         Comment("✗ SELL Order Failed: ", trade.ResultRetcodeDescription());
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Move Stop Loss to Break-Even for all open positions              |
+//+------------------------------------------------------------------+
+void MoveSLToBreakEven()
+{
+   int total = PositionsTotal();
+   int movedCount = 0;
+   int failedCount = 0;
+
+   if(total == 0)
+   {
+      Comment("No open positions to move to Break-Even");
+      Print("Move to BE: No open positions");
+      return;
+   }
+
+   for(int i = total - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket > 0 && PositionGetString(POSITION_SYMBOL) == _Symbol)
+      {
+         double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+         double currentSL = PositionGetDouble(POSITION_SL);
+         double currentTP = PositionGetDouble(POSITION_TP);
+         ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+         string comment = PositionGetString(POSITION_COMMENT);
+
+         // Parse BE pips from comment (locked in at order placement)
+         double actualBEPips = 0;
+         int bePos = StringFind(comment, "|BE:");
+         if(bePos >= 0)
+         {
+            // Extract BE value from comment
+            string beStr = StringSubstr(comment, bePos + 4);  // Skip "|BE:"
+            actualBEPips = StringToDouble(beStr);
+         }
+         else
+         {
+            // Fallback: Calculate BE for positions without BE in comment
+            double actualLotSize = PositionGetDouble(POSITION_VOLUME);
+            actualBEPips = CalculateBEPipsForOrder(actualLotSize);
+         }
+
+         // Add user's desired offset
+         double totalBEPips = actualBEPips + inpBEOffsetPips;
+
+         // Calculate BE price based on actual entry
+         double bePrice;
+         if(posType == POSITION_TYPE_BUY)
+            bePrice = entryPrice + (totalBEPips * g_PipValue);
+         else // POSITION_TYPE_SELL
+            bePrice = entryPrice - (totalBEPips * g_PipValue);
+
+         bePrice = NormalizeDouble(bePrice, g_Digits);
+
+         // Only modify if BE is better than current SL
+         bool shouldModify = false;
+         if(posType == POSITION_TYPE_BUY)
+         {
+            if(currentSL < bePrice || currentSL == 0)
+               shouldModify = true;
+         }
+         else // SELL
+         {
+            if(currentSL > bePrice || currentSL == 0)
+               shouldModify = true;
+         }
+
+         if(shouldModify)
+         {
+            // Validate stop level distance (broker requirements)
+            long stopLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+            double minDistance = stopLevel * g_Point;
+            double currentPrice = (posType == POSITION_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+            double actualDistance = (posType == POSITION_TYPE_BUY) ? (currentPrice - bePrice) : (bePrice - currentPrice);
+
+            // Check if SL is far enough from current price
+            if(actualDistance < minDistance)
+            {
+               Print("WARNING: Cannot move #", ticket, " to BE - too close to market (",
+                     DoubleToString(actualDistance / g_Point, 0), " points, min: ", stopLevel, " points)");
+               failedCount++;
+               continue;
+            }
+
+            bool result = trade.PositionModify(ticket, bePrice, currentTP);
+
+            if(result)
+            {
+               movedCount++;
+               Print("Position #", ticket, " SL moved to BE: ", DoubleToString(actualBEPips, 2),
+                     " + ", DoubleToString(inpBEOffsetPips, 1), " offset = ", DoubleToString(totalBEPips, 2), " pips at price ", bePrice);
+            }
+            else
+            {
+               failedCount++;
+               Print("Failed to move position #", ticket, " to BE: ", trade.ResultRetcodeDescription());
+            }
+         }
+      }
+   }
+
+   // Display result
+   if(movedCount > 0)
+      Comment("✓ Moved ", movedCount, " position(s) to Break-Even");
+   else if(failedCount > 0)
+      Comment("✗ Failed to move ", failedCount, " position(s) to BE");
+   else
+      Comment("All positions already at or better than Break-Even");
+
+   Print("Move to BE completed: ", movedCount, " moved, ", failedCount, " failed");
+}
+
+//+------------------------------------------------------------------+
+//| Close All Open Positions                                         |
+//+------------------------------------------------------------------+
+void CloseAllTrades()
+{
+   int total = PositionsTotal();
+   int closedCount = 0;
+   int failedCount = 0;
+
+   if(total == 0)
+   {
+      Comment("No open positions to close");
+      Print("Close All: No open positions");
+      return;
+   }
+
+   // Loop backwards to avoid issues with position indices changing
+   for(int i = total - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket > 0 && PositionGetString(POSITION_SYMBOL) == _Symbol)
+      {
+         bool result = trade.PositionClose(ticket);
+
+         if(result)
+         {
+            closedCount++;
+            Print("Position #", ticket, " closed successfully");
+         }
+         else
+         {
+            failedCount++;
+            Print("Failed to close position #", ticket, ": ", trade.ResultRetcodeDescription());
+         }
+      }
+   }
+
+   // Display result
+   if(closedCount > 0)
+      Comment("✓ Closed ", closedCount, " position(s)");
+   else if(failedCount > 0)
+      Comment("✗ Failed to close ", failedCount, " position(s)");
+   else
+      Comment("No positions were closed");
+
+   Print("Close All completed: ", closedCount, " closed, ", failedCount, " failed");
+}
+
+//+------------------------------------------------------------------+
+//| Update label position and text (for draggable lines)             |
+//+------------------------------------------------------------------+
+void UpdateLabelPosition(string labelName, double price, string text)
+{
+   datetime labelTime;
+   int anchor;
+   double labelPrice = price;
+
+   // Calculate label position based on user setting
+   if(inpLabelPosition == LABEL_RIGHT)
+   {
+      // Position to the right
+      labelTime = TimeCurrent() + PeriodSeconds(PERIOD_CURRENT) * 5;
+      anchor = ANCHOR_LEFT;
+   }
+   else if(inpLabelPosition == LABEL_ABOVE)
+   {
+      // Position above the line
+      labelTime = TimeCurrent();
+      anchor = ANCHOR_LEFT_LOWER;
+      labelPrice = price + (1 * g_Point);  // 1 point above
+   }
+   else  // LABEL_BELOW
+   {
+      // Position below the line
+      labelTime = TimeCurrent();
+      anchor = ANCHOR_LEFT_UPPER;
+      labelPrice = price - (1 * g_Point);  // 1 point below
+   }
+
+   // Update position
+   ObjectSetInteger(0, labelName, OBJPROP_TIME, labelTime);
+   ObjectSetDouble(0, labelName, OBJPROP_PRICE, labelPrice);
+   ObjectSetInteger(0, labelName, OBJPROP_ANCHOR, anchor);
+   ObjectSetString(0, labelName, OBJPROP_TEXT, text);
+}
+
+//+------------------------------------------------------------------+
+//| Update Reference Lines                                            |
+//+------------------------------------------------------------------+
+void UpdateLines()
+{
+   if(!inpShowLines) return;
+
+   // Trade Management Mode: Skip planning lines, show only actual order lines
+   if(inpTradeManagementMode)
+   {
+      // Delete planning lines if they exist
+      if(ObjectFind(0, g_SLLineName) >= 0) ObjectDelete(0, g_SLLineName);
+      if(ObjectFind(0, g_TPLineName) >= 0) ObjectDelete(0, g_TPLineName);
+      if(ObjectFind(0, g_EntryLineName) >= 0) ObjectDelete(0, g_EntryLineName);
+      if(ObjectFind(0, g_BELineName) >= 0) ObjectDelete(0, g_BELineName);
+      if(ObjectFind(0, g_PartialTP1LineName) >= 0) ObjectDelete(0, g_PartialTP1LineName);
+      if(ObjectFind(0, g_PartialTP2LineName) >= 0) ObjectDelete(0, g_PartialTP2LineName);
+      if(ObjectFind(0, g_PartialTP3LineName) >= 0) ObjectDelete(0, g_PartialTP3LineName);
+      return;  // Skip drawing planning lines
+   }
+
+   RiskCalculation calc = (inpDisplayMode == DISPLAY_CONSERVATIVE) ? g_ConservativeCalc : g_IdealCalc;
+   
+   datetime currentTime = TimeCurrent();
+   datetime futureTime = currentTime + PeriodSeconds(PERIOD_CURRENT) * 100;
+   
+   // Stop Loss Line
+   bool isDynamicSL = (inpSLMode == SL_DYNAMIC);
+   bool isHybridSL = (inpSLMode == SL_HYBRID);
+
+   // In Hybrid mode, draw both reference SL and dynamic SL lines
+   if(isHybridSL)
+   {
+      double currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+
+      // Draw Reference SL Line (non-draggable, dashed, shows manual SL calculation)
+      if(g_ReferenceSLPrice > 0)
+      {
+         if(ObjectFind(0, g_SLRefLineName) < 0)
+         {
+            ObjectCreate(0, g_SLRefLineName, OBJ_TREND, 0, currentTime, g_ReferenceSLPrice, futureTime, g_ReferenceSLPrice);
+            ObjectSetInteger(0, g_SLRefLineName, OBJPROP_COLOR, inpSLLineColor);
+            ObjectSetInteger(0, g_SLRefLineName, OBJPROP_WIDTH, 1);
+            ObjectSetInteger(0, g_SLRefLineName, OBJPROP_STYLE, STYLE_DASH);
+            ObjectSetInteger(0, g_SLRefLineName, OBJPROP_RAY_RIGHT, true);
+            ObjectSetInteger(0, g_SLRefLineName, OBJPROP_SELECTABLE, false);
+            ObjectSetString(0, g_SLRefLineName, OBJPROP_TEXT, "SL Ref (Manual)");
+         }
+         else
+         {
+            ObjectMove(0, g_SLRefLineName, 0, currentTime, g_ReferenceSLPrice);
+            ObjectMove(0, g_SLRefLineName, 1, futureTime, g_ReferenceSLPrice);
+         }
+      }
+
+      // Delete reference SL label if it exists (not needed - user knows the setting)
+      if(ObjectFind(0, "SLRefLabel") >= 0)
+         ObjectDelete(0, "SLRefLabel");
+
+      // Draw Dynamic SL Line (draggable, solid, actual SL for trading)
+      if(ObjectFind(0, g_SLLineName) < 0)
+      {
+         ObjectCreate(0, g_SLLineName, OBJ_TREND, 0, currentTime, calc.slPrice, futureTime, calc.slPrice);
+         ObjectSetInteger(0, g_SLLineName, OBJPROP_COLOR, inpSLLineColor);
+         ObjectSetInteger(0, g_SLLineName, OBJPROP_WIDTH, 2);
+         ObjectSetInteger(0, g_SLLineName, OBJPROP_STYLE, STYLE_SOLID);
+         ObjectSetInteger(0, g_SLLineName, OBJPROP_RAY_RIGHT, true);
+         ObjectSetInteger(0, g_SLLineName, OBJPROP_SELECTABLE, true);
+         ObjectSetString(0, g_SLLineName, OBJPROP_TEXT, "SL (Dynamic)");
+      }
+      else
+      {
+         ObjectMove(0, g_SLLineName, 0, currentTime, calc.slPrice);
+         ObjectMove(0, g_SLLineName, 1, futureTime, calc.slPrice);
+      }
+
+      // Add text label for dynamic SL
+      double slPips = MathAbs(currentPrice - calc.slPrice) / g_PipValue;
+      string slLabel = "SL: " + DoubleToString(slPips, 1) + " pips";
+
+      if(ObjectFind(0, g_SLLabelName) < 0)
+      {
+         ObjectCreate(0, g_SLLabelName, OBJ_TEXT, 0, TimeCurrent(), calc.slPrice);
+         ObjectSetInteger(0, g_SLLabelName, OBJPROP_COLOR, inpSLLineColor);
+         ObjectSetInteger(0, g_SLLabelName, OBJPROP_FONTSIZE, 8);
+      }
+      UpdateLabelPosition(g_SLLabelName, calc.slPrice, slLabel);
+   }
+   else
+   {
+      // Standard mode (Manual or Dynamic)
+
+      // Delete reference SL line if it exists (cleanup from Hybrid mode)
+      if(ObjectFind(0, g_SLRefLineName) >= 0)
+         ObjectDelete(0, g_SLRefLineName);
+      if(ObjectFind(0, "SLRefLabel") >= 0)
+         ObjectDelete(0, "SLRefLabel");
+
+      if(ObjectFind(0, g_SLLineName) < 0)
+      {
+         ObjectCreate(0, g_SLLineName, OBJ_TREND, 0, currentTime, calc.slPrice, futureTime, calc.slPrice);
+         ObjectSetInteger(0, g_SLLineName, OBJPROP_COLOR, inpSLLineColor);
+         ObjectSetInteger(0, g_SLLineName, OBJPROP_WIDTH, 2);
+         ObjectSetInteger(0, g_SLLineName, OBJPROP_STYLE, STYLE_SOLID);
+         ObjectSetInteger(0, g_SLLineName, OBJPROP_RAY_RIGHT, true);
+         ObjectSetString(0, g_SLLineName, OBJPROP_TEXT, "SL: " + DoubleToString(calc.slPips, 1) + " pips");
+      }
+      else
+      {
+         ObjectMove(0, g_SLLineName, 0, currentTime, calc.slPrice);
+         ObjectMove(0, g_SLLineName, 1, futureTime, calc.slPrice);
+      }
+
+      // Make line draggable in Dynamic mode
+      ObjectSetInteger(0, g_SLLineName, OBJPROP_SELECTABLE, isDynamicSL);
+
+      // Add text label showing pip count (for both Manual and Dynamic modes)
+      double currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      double slPips = MathAbs(currentPrice - calc.slPrice) / g_PipValue;
+      string slLabel = "SL: " + DoubleToString(slPips, 1) + " pips";
+
+      if(ObjectFind(0, g_SLLabelName) < 0)
+      {
+         ObjectCreate(0, g_SLLabelName, OBJ_TEXT, 0, TimeCurrent(), calc.slPrice);
+         ObjectSetInteger(0, g_SLLabelName, OBJPROP_COLOR, inpSLLineColor);
+         ObjectSetInteger(0, g_SLLabelName, OBJPROP_FONTSIZE, 8);
+      }
+      UpdateLabelPosition(g_SLLabelName, calc.slPrice, slLabel);
+   }
+   
+   // Take Profit Line(s)
+   if(inpShowTP)
+   {
+      // Draw partial exit lines (always draggable)
+      double exitPercent3 = (inpNumberOfLevels == 3) ? (100 - inpExitPercent1 - inpExitPercent2) : 0;
+
+      // Level 1
+      if(ObjectFind(0, g_PartialTP1LineName) < 0)
+      {
+         ObjectCreate(0, g_PartialTP1LineName, OBJ_TREND, 0, currentTime, calc.partialTP1Price, futureTime, calc.partialTP1Price);
+         ObjectSetInteger(0, g_PartialTP1LineName, OBJPROP_COLOR, inpTPLineColor);
+         ObjectSetInteger(0, g_PartialTP1LineName, OBJPROP_WIDTH, 2);
+         ObjectSetInteger(0, g_PartialTP1LineName, OBJPROP_STYLE, STYLE_SOLID);
+         ObjectSetInteger(0, g_PartialTP1LineName, OBJPROP_RAY_RIGHT, true);
+         ObjectSetString(0, g_PartialTP1LineName, OBJPROP_TEXT, "TP1: " + DoubleToString(inpExitPercent1, 0) + "% @ +" + DoubleToString(calc.partialPips1, 1) + " pips");
+      }
+      else
+      {
+         ObjectMove(0, g_PartialTP1LineName, 0, currentTime, calc.partialTP1Price);
+         ObjectMove(0, g_PartialTP1LineName, 1, futureTime, calc.partialTP1Price);
+         ObjectSetString(0, g_PartialTP1LineName, OBJPROP_TEXT, "TP1: " + DoubleToString(inpExitPercent1, 0) + "% @ +" + DoubleToString(calc.partialPips1, 1) + " pips");
+      }
+
+      // Make line always draggable
+      ObjectSetInteger(0, g_PartialTP1LineName, OBJPROP_SELECTABLE, true);
+
+      // Add text label for TP1
+      // Calculate RR using actual gross profit from partial position
+      double rr1 = (calc.totalRisk > 0) ? (calc.partialGrossPnL1 / calc.totalRisk) : 0;
+      string tp1Label = "TP1: " + DoubleToString(GetActiveExitPercent1(), 0) + "% (" + DoubleToString(calc.partialLots1, 2) + " lots) @ " + DoubleToString(calc.partialPips1, 1) + " pips";
+      if(rr1 > 0) tp1Label += " | RR: " + DoubleToString(rr1, 2);
+
+      if(ObjectFind(0, g_PartialTP1LabelName) < 0)
+      {
+         ObjectCreate(0, g_PartialTP1LabelName, OBJ_TEXT, 0, TimeCurrent(), calc.partialTP1Price);
+         ObjectSetInteger(0, g_PartialTP1LabelName, OBJPROP_COLOR, inpTPLineColor);
+         ObjectSetInteger(0, g_PartialTP1LabelName, OBJPROP_FONTSIZE, 8);
+      }
+      UpdateLabelPosition(g_PartialTP1LabelName, calc.partialTP1Price, tp1Label);
+
+      // Level 2 (if 2 or more levels)
+      if(inpNumberOfLevels >= 2)
+      {
+         if(ObjectFind(0, g_PartialTP2LineName) < 0)
+         {
+            ObjectCreate(0, g_PartialTP2LineName, OBJ_TREND, 0, currentTime, calc.partialTP2Price, futureTime, calc.partialTP2Price);
+            ObjectSetInteger(0, g_PartialTP2LineName, OBJPROP_COLOR, inpTPLineColor);
+            ObjectSetInteger(0, g_PartialTP2LineName, OBJPROP_WIDTH, 2);
+            ObjectSetInteger(0, g_PartialTP2LineName, OBJPROP_STYLE, STYLE_SOLID);
+            ObjectSetInteger(0, g_PartialTP2LineName, OBJPROP_RAY_RIGHT, true);
+            ObjectSetString(0, g_PartialTP2LineName, OBJPROP_TEXT, "TP2: " + DoubleToString(inpExitPercent2, 0) + "% @ +" + DoubleToString(calc.partialPips2, 1) + " pips");
+         }
+         else
+         {
+            ObjectMove(0, g_PartialTP2LineName, 0, currentTime, calc.partialTP2Price);
+            ObjectMove(0, g_PartialTP2LineName, 1, futureTime, calc.partialTP2Price);
+            ObjectSetString(0, g_PartialTP2LineName, OBJPROP_TEXT, "TP2: " + DoubleToString(inpExitPercent2, 0) + "% @ +" + DoubleToString(calc.partialPips2, 1) + " pips");
+         }
+
+         // Make line always draggable
+         ObjectSetInteger(0, g_PartialTP2LineName, OBJPROP_SELECTABLE, true);
+
+         // Add text label for TP2
+         // Calculate RR using actual gross profit from partial position
+         double rr2 = (calc.totalRisk > 0) ? (calc.partialGrossPnL2 / calc.totalRisk) : 0;
+         string tp2Label = "TP2: " + DoubleToString(GetActiveExitPercent2(), 0) + "% (" + DoubleToString(calc.partialLots2, 2) + " lots) @ " + DoubleToString(calc.partialPips2, 1) + " pips";
+         if(rr2 > 0) tp2Label += " | RR: " + DoubleToString(rr2, 2);
+
+         if(ObjectFind(0, g_PartialTP2LabelName) < 0)
+         {
+            ObjectCreate(0, g_PartialTP2LabelName, OBJ_TEXT, 0, TimeCurrent(), calc.partialTP2Price);
+            ObjectSetInteger(0, g_PartialTP2LabelName, OBJPROP_COLOR, inpTPLineColor);
+            ObjectSetInteger(0, g_PartialTP2LabelName, OBJPROP_FONTSIZE, 8);
+         }
+         UpdateLabelPosition(g_PartialTP2LabelName, calc.partialTP2Price, tp2Label);
+      }
+
+      // Level 3 (if enabled)
+      if(inpNumberOfLevels == 3)
+      {
+         if(ObjectFind(0, g_PartialTP3LineName) < 0)
+         {
+            ObjectCreate(0, g_PartialTP3LineName, OBJ_TREND, 0, currentTime, calc.partialTP3Price, futureTime, calc.partialTP3Price);
+            ObjectSetInteger(0, g_PartialTP3LineName, OBJPROP_COLOR, inpTPLineColor);
+            ObjectSetInteger(0, g_PartialTP3LineName, OBJPROP_WIDTH, 2);
+            ObjectSetInteger(0, g_PartialTP3LineName, OBJPROP_STYLE, STYLE_DASH);
+            ObjectSetInteger(0, g_PartialTP3LineName, OBJPROP_RAY_RIGHT, true);
+            ObjectSetString(0, g_PartialTP3LineName, OBJPROP_TEXT, "TP3: " + DoubleToString(exitPercent3, 0) + "% @ +" + DoubleToString(calc.partialPips3, 1) + " pips");
+         }
+         else
+         {
+            ObjectMove(0, g_PartialTP3LineName, 0, currentTime, calc.partialTP3Price);
+            ObjectMove(0, g_PartialTP3LineName, 1, futureTime, calc.partialTP3Price);
+            ObjectSetString(0, g_PartialTP3LineName, OBJPROP_TEXT, "TP3: " + DoubleToString(exitPercent3, 0) + "% @ +" + DoubleToString(calc.partialPips3, 1) + " pips");
+         }
+
+         // Make line always draggable
+         ObjectSetInteger(0, g_PartialTP3LineName, OBJPROP_SELECTABLE, true);
+
+         // Add text label for TP3
+         // Calculate RR using actual gross profit from partial position
+         double rr3 = (calc.totalRisk > 0) ? (calc.partialGrossPnL3 / calc.totalRisk) : 0;
+         string tp3Label = "TP3: " + DoubleToString(exitPercent3, 0) + "% (" + DoubleToString(calc.partialLots3, 2) + " lots) @ " + DoubleToString(calc.partialPips3, 1) + " pips";
+         if(rr3 > 0) tp3Label += " | RR: " + DoubleToString(rr3, 2);
+
+         if(ObjectFind(0, g_PartialTP3LabelName) < 0)
+         {
+            ObjectCreate(0, g_PartialTP3LabelName, OBJ_TEXT, 0, TimeCurrent(), calc.partialTP3Price);
+            ObjectSetInteger(0, g_PartialTP3LabelName, OBJPROP_COLOR, inpTPLineColor);
+            ObjectSetInteger(0, g_PartialTP3LabelName, OBJPROP_FONTSIZE, 8);
+         }
+         UpdateLabelPosition(g_PartialTP3LabelName, calc.partialTP3Price, tp3Label);
+      }
+      else
+      {
+         // Delete TP3 line and label if it exists but 2 levels selected
+         if(ObjectFind(0, g_PartialTP3LineName) >= 0)
+            ObjectDelete(0, g_PartialTP3LineName);
+         if(ObjectFind(0, g_PartialTP3LabelName) >= 0)
+            ObjectDelete(0, g_PartialTP3LabelName);
+      }
+
+      // Delete standard TP line and label if they exist (cleanup from old version)
+      if(ObjectFind(0, g_TPLineName) >= 0)
+         ObjectDelete(0, g_TPLineName);
+      if(ObjectFind(0, g_TPLabelName) >= 0)
+         ObjectDelete(0, g_TPLabelName);
+   }
+   
+   // Entry Line
+   if(inpShowEntryLine)
+   {
+      if(ObjectFind(0, g_EntryLineName) < 0)
+      {
+         ObjectCreate(0, g_EntryLineName, OBJ_TREND, 0, currentTime, calc.entryPrice, futureTime, calc.entryPrice);
+         ObjectSetInteger(0, g_EntryLineName, OBJPROP_COLOR, inpEntryLineColor);
+         ObjectSetInteger(0, g_EntryLineName, OBJPROP_WIDTH, 2);
+         ObjectSetInteger(0, g_EntryLineName, OBJPROP_STYLE, STYLE_DOT);
+         ObjectSetInteger(0, g_EntryLineName, OBJPROP_RAY_RIGHT, true);
+         ObjectSetInteger(0, g_EntryLineName, OBJPROP_SELECTABLE, false);
+         string entryLabel = (inpDisplayMode == DISPLAY_CONSERVATIVE) ? "Entry (w/ Slippage)" : "Entry";
+         ObjectSetString(0, g_EntryLineName, OBJPROP_TEXT, entryLabel);
+      }
+      else
+      {
+         ObjectMove(0, g_EntryLineName, 0, currentTime, calc.entryPrice);
+         ObjectMove(0, g_EntryLineName, 1, futureTime, calc.entryPrice);
+      }
+   }
+
+   // BE Trigger Price Line (Manual BE Trigger)
+   if(inpUseBETriggerLine && g_BETriggerPriceRuntime > 0)
+   {
+      if(ObjectFind(0, g_BETriggerLineName) < 0)
+      {
+         ObjectCreate(0, g_BETriggerLineName, OBJ_TREND, 0, currentTime, g_BETriggerPriceRuntime, futureTime, g_BETriggerPriceRuntime);
+         ObjectSetInteger(0, g_BETriggerLineName, OBJPROP_COLOR, clrGold);
+         ObjectSetInteger(0, g_BETriggerLineName, OBJPROP_WIDTH, 2);
+         ObjectSetInteger(0, g_BETriggerLineName, OBJPROP_STYLE, STYLE_DASHDOT);
+         ObjectSetInteger(0, g_BETriggerLineName, OBJPROP_RAY_RIGHT, true);
+         ObjectSetInteger(0, g_BETriggerLineName, OBJPROP_SELECTABLE, true);
+         ObjectSetString(0, g_BETriggerLineName, OBJPROP_TEXT, "BE Trigger: " + DoubleToString(g_BETriggerPriceRuntime, _Digits));
+      }
+      else
+      {
+         ObjectMove(0, g_BETriggerLineName, 0, currentTime, g_BETriggerPriceRuntime);
+         ObjectMove(0, g_BETriggerLineName, 1, futureTime, g_BETriggerPriceRuntime);
+         ObjectSetString(0, g_BETriggerLineName, OBJPROP_TEXT, "BE Trigger: " + DoubleToString(g_BETriggerPriceRuntime, _Digits));
+      }
+
+      // Draw BE Trigger Label
+      if(ObjectFind(0, g_BETriggerLabelName) < 0)
+      {
+         ObjectCreate(0, g_BETriggerLabelName, OBJ_TEXT, 0, currentTime, g_BETriggerPriceRuntime);
+         ObjectSetInteger(0, g_BETriggerLabelName, OBJPROP_COLOR, clrGold);
+         ObjectSetInteger(0, g_BETriggerLabelName, OBJPROP_FONTSIZE, 8);
+      }
+      UpdateLabelPosition(g_BETriggerLabelName, g_BETriggerPriceRuntime, "BE Trigger");
+   }
+   else
+   {
+      // Delete BE Trigger line if it exists but shouldn't be shown
+      if(ObjectFind(0, g_BETriggerLineName) >= 0)
+         ObjectDelete(0, g_BETriggerLineName);
+      if(ObjectFind(0, g_BETriggerLabelName) >= 0)
+         ObjectDelete(0, g_BETriggerLabelName);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Delete Lines                                                      |
+//+------------------------------------------------------------------+
+void DeleteLines()
+{
+   ObjectDelete(0, g_SLLineName);
+   ObjectDelete(0, g_TPLineName);
+   ObjectDelete(0, g_EntryLineName);
+   ObjectDelete(0, g_BELineName);
+   ObjectDelete(0, g_BETriggerLineName);
+   ObjectDelete(0, g_PartialTP1LineName);
+   ObjectDelete(0, g_PartialTP2LineName);
+   ObjectDelete(0, g_PartialTP3LineName);
+   // Delete all TP line labels
+   ObjectDelete(0, g_SLLabelName);
+   ObjectDelete(0, g_TPLabelName);
+   ObjectDelete(0, g_BETriggerLabelName);
+   ObjectDelete(0, g_PartialTP1LabelName);
+   ObjectDelete(0, g_PartialTP2LabelName);
+   ObjectDelete(0, g_PartialTP3LabelName);
+}
+
+//+------------------------------------------------------------------+
+//| Load Global Variables From INI File (Auto-sync)                  |
+//+------------------------------------------------------------------+
+void LoadSettingsFromFile()
+{
+   if(inpExportDirectory == "")
+      return;
+
+   string filename = inpExportDirectory + "\\FRTM-GlobalVars-" + _Symbol + ".ini";
+
+   int fileHandle = FileOpen(filename, FILE_READ|FILE_TXT|FILE_COMMON);
+   if(fileHandle == INVALID_HANDLE)
+      return;  // File doesn't exist yet (first run)
+
+   string section = "";
+   int linesRead = 0;
+
+   while(!FileIsEnding(fileHandle))
+   {
+      string line = FileReadString(fileHandle);
+      StringTrimLeft(line);
+      StringTrimRight(line);
+
+      // Skip empty lines and comments
+      if(line == "" || StringFind(line, "#") == 0)
+         continue;
+
+      // Parse section header [Section]
+      if(StringFind(line, "[") == 0)
+      {
+         int endPos = StringFind(line, "]");
+         if(endPos > 1)
+            section = StringSubstr(line, 1, endPos - 1);
+         continue;
+      }
+
+      // Parse key=value
+      int equalPos = StringFind(line, "=");
+      if(equalPos > 0 && section == "GlobalVariables")
+      {
+         string key = StringSubstr(line, 0, equalPos);
+         string value = StringSubstr(line, equalPos + 1);
+         StringTrimLeft(key);
+         StringTrimRight(key);
+
+         // Load global variables only - these update immediately
+         if(key == "DynamicSLPrice")
+            g_DynamicSLPrice = StringToDouble(value);
+         else if(key == "DynamicTPPrice")
+            g_DynamicTPPrice = StringToDouble(value);
+         else if(key == "PartialTP1Price")
+            g_PartialTP1Price = StringToDouble(value);
+         else if(key == "PartialTP2Price")
+            g_PartialTP2Price = StringToDouble(value);
+         else if(key == "PartialTP3Price")
+            g_PartialTP3Price = StringToDouble(value);
+         else if(key == "BETriggerPrice")
+            g_BETriggerPriceRuntime = StringToDouble(value);
+         else if(key == "PartialLots1")
+            g_PartialLots1 = StringToDouble(value);
+         else if(key == "PartialLots2")
+            g_PartialLots2 = StringToDouble(value);
+         else if(key == "PartialLots3")
+            g_PartialLots3 = StringToDouble(value);
+
+         linesRead++;
+      }
+   }
+
+   FileClose(fileHandle);
+   if(linesRead > 0)
+      Print("Global variables loaded: ", linesRead, " from ", filename);
+}
+
+//+------------------------------------------------------------------+
+//| Save Global Variables To INI File (Auto-sync)                    |
+//+------------------------------------------------------------------+
+void SaveSettingsToFile()
+{
+   if(inpExportDirectory == "")
+      return;
+
+   // Prevent circular saves during file reload
+   if(g_IsReloadingFromFile)
+      return;
+
+   string filename = inpExportDirectory + "\\FRTM-GlobalVars-" + _Symbol + ".ini";
+
+   int fileHandle = FileOpen(filename, FILE_WRITE|FILE_TXT|FILE_COMMON);
+   if(fileHandle == INVALID_HANDLE)
+   {
+      Print("Failed to save global variables: ", filename, " Error: ", GetLastError());
+      return;
+   }
+
+   // Write header
+   FileWriteString(fileHandle, "# FRTM-MT5 Global Variables (Auto-Sync)\n");
+   FileWriteString(fileHandle, "# This file contains ONLY draggable line positions for real-time sync\n");
+   FileWriteString(fileHandle, "# Last saved: " + TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS) + "\n");
+   FileWriteString(fileHandle, "# Symbol: " + _Symbol + "\n\n");
+
+   // [GlobalVariables] - Draggable line prices only
+   FileWriteString(fileHandle, "[GlobalVariables]\n");
+   FileWriteString(fileHandle, "DynamicSLPrice=" + DoubleToString(g_DynamicSLPrice, _Digits) + "\n");
+   FileWriteString(fileHandle, "DynamicTPPrice=" + DoubleToString(g_DynamicTPPrice, _Digits) + "\n");
+   FileWriteString(fileHandle, "PartialTP1Price=" + DoubleToString(g_PartialTP1Price, _Digits) + "\n");
+   FileWriteString(fileHandle, "PartialTP2Price=" + DoubleToString(g_PartialTP2Price, _Digits) + "\n");
+   FileWriteString(fileHandle, "PartialTP3Price=" + DoubleToString(g_PartialTP3Price, _Digits) + "\n");
+   FileWriteString(fileHandle, "BETriggerPrice=" + DoubleToString(g_BETriggerPriceRuntime, _Digits) + "\n");
+   FileWriteString(fileHandle, "PartialLots1=" + DoubleToString(g_PartialLots1, 2) + "\n");
+   FileWriteString(fileHandle, "PartialLots2=" + DoubleToString(g_PartialLots2, 2) + "\n");
+   FileWriteString(fileHandle, "PartialLots3=" + DoubleToString(g_PartialLots3, 2) + "\n");
+
+   FileClose(fileHandle);
+}
+
+//+------------------------------------------------------------------+
+//| Check File For Changes and Reload                                 |
+//+------------------------------------------------------------------+
+void CheckAndReloadSettings()
+{
+   if(inpExportDirectory == "")
+      return;
+
+   string filename = inpExportDirectory + "\\FRTM-GlobalVars-" + _Symbol + ".ini";
+
+   // Get file modification time
+   long modifyTime = FileGetInteger(filename, FILE_MODIFY_DATE, true);
+   if(modifyTime <= 0)
+      return;
+
+   datetime fileTime = (datetime)modifyTime;
+
+   if(fileTime > g_LastFileModifyTime)
+   {
+      // Set flag to prevent SaveSettingsToFile() from being called during reload
+      g_IsReloadingFromFile = true;
+
+      LoadSettingsFromFile();
+      g_LastFileModifyTime = fileTime;
+      CalculateRisk();   // Recalculate to apply loaded global variables
+      UpdateLines();     // Update line positions
+      Print("Global variables reloaded from file at ", TimeToString(fileTime));
+
+      // Clear flag after reload complete
+      g_IsReloadingFromFile = false;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Save Settings to .set File (MT5 Native Format)                   |
+//+------------------------------------------------------------------+
+void SaveToSetFile()
+{
+   if(inpExportDirectory == "")
+   {
+      Print("Export directory not configured");
+      return;
+   }
+
+   // Generate filename with timestamp
+   string timestamp = TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS);
+   StringReplace(timestamp, ":", "-");
+   StringReplace(timestamp, ".", "-");
+   StringReplace(timestamp, " ", "_");
+
+   string filename = inpExportDirectory + "\\FRTM-MT5_Settings_" + timestamp + ".set";
+
+   int fileHandle = FileOpen(filename, FILE_WRITE|FILE_TXT|FILE_COMMON);
+   if(fileHandle == INVALID_HANDLE)
+   {
+      Print("Failed to create .set file: ", filename, " Error: ", GetLastError());
+      Comment("✗ Failed to create .set file");
+      return;
+   }
+
+   // Header
+   FileWriteString(fileHandle, "; saved automatically on " + TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS) + "\n");
+   FileWriteString(fileHandle, "; this file contains input parameters for FRTM-MT5 EA\n");
+   FileWriteString(fileHandle, ";\n");
+
+   // Trade Management
+   FileWriteString(fileHandle, "inpTradeManagementMode=" + (inpTradeManagementMode ? "1" : "0") + "||Y\n");
+   FileWriteString(fileHandle, "inpPlaceSLTP=" + (inpPlaceSLTP ? "1" : "0") + "||Y\n");
+   FileWriteString(fileHandle, "inpUseBETriggerLine=" + (inpUseBETriggerLine ? "1" : "0") + "||Y\n");
+   FileWriteString(fileHandle, "inpBEOffsetPips=" + DoubleToString(inpBEOffsetPips, 2) + "||Y\n");
+   FileWriteString(fileHandle, "inpTrailSLToNextTP=" + (inpTrailSLToNextTP ? "1" : "0") + "||Y\n");
+   FileWriteString(fileHandle, "inpBEEnableAlert=" + (inpBEEnableAlert ? "1" : "0") + "||Y\n");
+   FileWriteString(fileHandle, "inpBEEnableSound=" + (inpBEEnableSound ? "1" : "0") + "||Y\n");
+   FileWriteString(fileHandle, "inpBEEnablePush=" + (inpBEEnablePush ? "1" : "0") + "||Y\n");
+   FileWriteString(fileHandle, "inpEmailAlertBETriggered=" + (inpEmailAlertBETriggered ? "1" : "0") + "||Y\n");
+   FileWriteString(fileHandle, "inpEmailAlertSLMovedToBE=" + (inpEmailAlertSLMovedToBE ? "1" : "0") + "||Y\n");
+   FileWriteString(fileHandle, "inpBESoundFile=" + inpBESoundFile + "||Y\n");
+
+   // Stop Loss
+   FileWriteString(fileHandle, "inpSLMode=" + IntegerToString(inpSLMode) + "||Y\n");
+   FileWriteString(fileHandle, "inpManualSLPips=" + DoubleToString(inpManualSLPips, 1) + "||Y\n");
+   FileWriteString(fileHandle, "inpTradeDirection=" + IntegerToString(inpTradeDirection) + "||Y\n");
+
+   // Take Profit
+   FileWriteString(fileHandle, "inpShowTP=" + (inpShowTP ? "1" : "0") + "||Y\n");
+
+   // Partial Exits
+   FileWriteString(fileHandle, "inpNumberOfLevels=" + IntegerToString(inpNumberOfLevels) + "||Y\n");
+   FileWriteString(fileHandle, "inpExitPercent1=" + DoubleToString(inpExitPercent1, 1) + "||Y\n");
+   FileWriteString(fileHandle, "inpExitPercent2=" + DoubleToString(inpExitPercent2, 1) + "||Y\n");
+
+   // Account & Risk
+   FileWriteString(fileHandle, "inpAccountSize=" + DoubleToString(inpAccountSize, 2) + "||Y\n");
+   FileWriteString(fileHandle, "inpRiskPercent=" + DoubleToString(inpRiskPercent, 2) + "||Y\n");
+   FileWriteString(fileHandle, "inpMarginPercent=" + DoubleToString(inpMarginPercent, 2) + "||Y\n");
+   FileWriteString(fileHandle, "inpCommissionPerLot=" + DoubleToString(inpCommissionPerLot, 2) + "||Y\n");
+   FileWriteString(fileHandle, "inpPipValueMode=" + IntegerToString(inpPipValueMode) + "||Y\n");
+   FileWriteString(fileHandle, "inpManualPipValue=" + DoubleToString(inpManualPipValue, 2) + "||Y\n");
+   FileWriteString(fileHandle, "inpShowPipValue=" + (inpShowPipValue ? "1" : "0") + "||Y\n");
+
+   // Slippage
+   FileWriteString(fileHandle, "inpEntrySlippage=" + DoubleToString(inpEntrySlippage, 2) + "||Y\n");
+   FileWriteString(fileHandle, "inpExitSlippage=" + DoubleToString(inpExitSlippage, 2) + "||Y\n");
+   FileWriteString(fileHandle, "inpDisplayMode=" + IntegerToString(inpDisplayMode) + "||Y\n");
+   FileWriteString(fileHandle, "inpShowAlternateLotSize=" + (inpShowAlternateLotSize ? "1" : "0") + "||Y\n");
+
+   // Display
+   FileWriteString(fileHandle, "inpShowPanel=" + (inpShowPanel ? "1" : "0") + "||Y\n");
+   FileWriteString(fileHandle, "inpShowLines=" + (inpShowLines ? "1" : "0") + "||Y\n");
+   FileWriteString(fileHandle, "inpShowEntryLine=" + (inpShowEntryLine ? "1" : "0") + "||Y\n");
+   FileWriteString(fileHandle, "inpShowReturnOnMargin=" + (inpShowReturnOnMargin ? "1" : "0") + "||Y\n");
+
+   // Panel Layout
+   FileWriteString(fileHandle, "inpPanelX=" + IntegerToString(inpPanelX) + "||Y\n");
+   FileWriteString(fileHandle, "inpPanelY=" + IntegerToString(inpPanelY) + "||Y\n");
+   FileWriteString(fileHandle, "inpPanelWidth=" + IntegerToString(inpPanelWidth) + "||Y\n");
+   FileWriteString(fileHandle, "inpPanelHeight=" + IntegerToString(inpPanelHeight) + "||Y\n");
+   FileWriteString(fileHandle, "inpPanelPadding=" + IntegerToString(inpPanelPadding) + "||Y\n");
+   FileWriteString(fileHandle, "inpRowHeight=" + IntegerToString(inpRowHeight) + "||Y\n");
+   FileWriteString(fileHandle, "inpDividerLength=" + IntegerToString(inpDividerLength) + "||Y\n");
+   FileWriteString(fileHandle, "inpFontSizeBold=" + IntegerToString(inpFontSizeBold) + "||Y\n");
+   FileWriteString(fileHandle, "inpFontSizeNormal=" + IntegerToString(inpFontSizeNormal) + "||Y\n");
+
+   // Colors
+   FileWriteString(fileHandle, "inpPanelBgColor=" + IntegerToString(inpPanelBgColor) + "||Y\n");
+   FileWriteString(fileHandle, "inpPanelTextColor=" + IntegerToString(inpPanelTextColor) + "||Y\n");
+   FileWriteString(fileHandle, "inpSLLineColor=" + IntegerToString(inpSLLineColor) + "||Y\n");
+   FileWriteString(fileHandle, "inpTPLineColor=" + IntegerToString(inpTPLineColor) + "||Y\n");
+   FileWriteString(fileHandle, "inpEntryLineColor=" + IntegerToString(inpEntryLineColor) + "||Y\n");
+   FileWriteString(fileHandle, "inpBELineColor=" + IntegerToString(inpBELineColor) + "||Y\n");
+   FileWriteString(fileHandle, "inpLabelPosition=" + IntegerToString(inpLabelPosition) + "||Y\n");
+
+   // Buttons
+   FileWriteString(fileHandle, "inpButtonWidth=" + IntegerToString(inpButtonWidth) + "||Y\n");
+   FileWriteString(fileHandle, "inpButtonHeight=" + IntegerToString(inpButtonHeight) + "||Y\n");
+   FileWriteString(fileHandle, "inpButtonSpacing=" + IntegerToString(inpButtonSpacing) + "||Y\n");
+   FileWriteString(fileHandle, "inpBuyButtonColor=" + IntegerToString(inpBuyButtonColor) + "||Y\n");
+   FileWriteString(fileHandle, "inpSellButtonColor=" + IntegerToString(inpSellButtonColor) + "||Y\n");
+   FileWriteString(fileHandle, "inpMoveToBEButtonColor=" + IntegerToString(inpMoveToBEButtonColor) + "||Y\n");
+   FileWriteString(fileHandle, "inpCloseAllButtonColor=" + IntegerToString(inpCloseAllButtonColor) + "||Y\n");
+
+   // BE Email Alerts
+   FileWriteString(fileHandle, "inpEmailAlertBETriggered=" + (inpEmailAlertBETriggered ? "1" : "0") + "||Y\n");
+   FileWriteString(fileHandle, "inpEmailAlertSLMovedToBE=" + (inpEmailAlertSLMovedToBE ? "1" : "0") + "||Y\n");
+
+   // Export Directory
+   FileWriteString(fileHandle, "inpExportDirectory=" + inpExportDirectory + "||Y\n");
+
+   FileClose(fileHandle);
+
+   string path = TerminalInfoString(TERMINAL_COMMONDATA_PATH) + "\\Files\\" + filename;
+   Print("✓ Settings exported to .set file: ", path);
+   Comment("✓ Settings exported to .set file!\n\n",
+           "File: ", filename, "\n",
+           "Location: MQL5\\Files\\Common\\\n\n",
+           "To load:\n",
+           "1. Right-click EA → Properties\n",
+           "2. Click 'Load' button\n",
+           "3. Select: ", filename);
+}
+
+//+------------------------------------------------------------------+
+//| Draw Actual Order Lines (Entry & BE for placed orders)           |
+//+------------------------------------------------------------------+
+void DrawActualOrderLines()
+{
+   datetime currentTime = TimeCurrent();
+   datetime futureTime = currentTime + PeriodSeconds(PERIOD_CURRENT) * 100;
+
+   // Track which tickets we're drawing
+   string existingTickets = "";
+
+   // Loop through all positions
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket <= 0) continue;
+
+      // Filter: only process positions for this symbol and magic number
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != 123456) continue;
+
+      // Get position details
+      double actualEntry = PositionGetDouble(POSITION_PRICE_OPEN);
+      ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+      string comment = PositionGetString(POSITION_COMMENT);
+
+      // Parse BE pips from comment
+      double actualBEPips = 0;
+      int bePos = StringFind(comment, "|BE:");
+      if(bePos >= 0)
+      {
+         string beStr = StringSubstr(comment, bePos + 4);
+         actualBEPips = StringToDouble(beStr);
+      }
+      else
+      {
+         // Fallback: Calculate BE for old orders
+         double actualLotSize = PositionGetDouble(POSITION_VOLUME);
+         actualBEPips = CalculateBEPipsForOrder(actualLotSize);
+      }
+
+      // Add offset to BE
+      double totalBEPips = actualBEPips + inpBEOffsetPips;
+
+      // Calculate BE price
+      double bePrice;
+      if(posType == POSITION_TYPE_BUY)
+         bePrice = actualEntry + (totalBEPips * g_PipValue);
+      else
+         bePrice = actualEntry - (totalBEPips * g_PipValue);
+
+      // Create unique line names
+      string entryLineName = "ActualEntry_" + IntegerToString(ticket);
+      string beLineName = "ActualBE_" + IntegerToString(ticket);
+      string entryLabelName = "ActualEntryLabel_" + IntegerToString(ticket);
+      string beLabelName = "ActualBELabel_" + IntegerToString(ticket);
+
+      existingTickets += IntegerToString(ticket) + ",";
+
+      // Draw Actual Entry Line
+      if(ObjectFind(0, entryLineName) < 0)
+      {
+         ObjectCreate(0, entryLineName, OBJ_TREND, 0, currentTime, actualEntry, futureTime, actualEntry);
+         ObjectSetInteger(0, entryLineName, OBJPROP_COLOR, clrDodgerBlue);
+         ObjectSetInteger(0, entryLineName, OBJPROP_WIDTH, 2);
+         ObjectSetInteger(0, entryLineName, OBJPROP_STYLE, STYLE_SOLID);
+         ObjectSetInteger(0, entryLineName, OBJPROP_RAY_RIGHT, true);
+         ObjectSetInteger(0, entryLineName, OBJPROP_SELECTABLE, false);
+         string typeStr = (posType == POSITION_TYPE_BUY) ? "BUY" : "SELL";
+         ObjectSetString(0, entryLineName, OBJPROP_TEXT, "Entry #" + IntegerToString(ticket) + " (" + typeStr + ")");
+      }
+      else
+      {
+         ObjectMove(0, entryLineName, 0, currentTime, actualEntry);
+         ObjectMove(0, entryLineName, 1, futureTime, actualEntry);
+      }
+
+      // Draw Entry Label
+      if(ObjectFind(0, entryLabelName) < 0)
+      {
+         ObjectCreate(0, entryLabelName, OBJ_TEXT, 0, currentTime, actualEntry);
+         ObjectSetInteger(0, entryLabelName, OBJPROP_COLOR, clrDodgerBlue);
+         ObjectSetInteger(0, entryLabelName, OBJPROP_FONTSIZE, 8);
+      }
+      // Update label position and text using label position setting
+      UpdateLabelPosition(entryLabelName, actualEntry, "ENTRY");
+
+      // Draw Actual BE Line
+      if(ObjectFind(0, beLineName) < 0)
+      {
+         ObjectCreate(0, beLineName, OBJ_TREND, 0, currentTime, bePrice, futureTime, bePrice);
+         ObjectSetInteger(0, beLineName, OBJPROP_COLOR, clrGold);
+         ObjectSetInteger(0, beLineName, OBJPROP_WIDTH, 2);
+         ObjectSetInteger(0, beLineName, OBJPROP_STYLE, STYLE_DOT);
+         ObjectSetInteger(0, beLineName, OBJPROP_RAY_RIGHT, true);
+         ObjectSetInteger(0, beLineName, OBJPROP_SELECTABLE, false);
+         ObjectSetString(0, beLineName, OBJPROP_TEXT, "BE #" + IntegerToString(ticket) + " (" + DoubleToString(totalBEPips, 2) + " pips)");
+      }
+      else
+      {
+         ObjectMove(0, beLineName, 0, currentTime, bePrice);
+         ObjectMove(0, beLineName, 1, futureTime, bePrice);
+      }
+
+      // Draw BE Label
+      if(ObjectFind(0, beLabelName) < 0)
+      {
+         ObjectCreate(0, beLabelName, OBJ_TEXT, 0, currentTime, bePrice);
+         ObjectSetInteger(0, beLabelName, OBJPROP_COLOR, clrGold);
+         ObjectSetInteger(0, beLabelName, OBJPROP_FONTSIZE, 8);
+      }
+      // Update BE label position and text using label position setting
+      UpdateLabelPosition(beLabelName, bePrice, "BE");
+   }
+
+   // Clean up lines for closed positions
+   for(int i = ObjectsTotal(0, 0, OBJ_TREND) - 1; i >= 0; i--)
+   {
+      string objName = ObjectName(0, i, 0, OBJ_TREND);
+
+      // Check if it's an actual order line
+      if(StringFind(objName, "ActualEntry_") == 0 || StringFind(objName, "ActualBE_") == 0)
+      {
+         // Extract ticket from name
+         string ticketStr = "";
+         if(StringFind(objName, "ActualEntry_") == 0)
+            ticketStr = StringSubstr(objName, 12);  // Skip "ActualEntry_"
+         else
+            ticketStr = StringSubstr(objName, 9);   // Skip "ActualBE_"
+
+         // If ticket not in existing list, delete the line
+         if(StringFind(existingTickets, ticketStr + ",") < 0)
+         {
+            ObjectDelete(0, objName);
+         }
+      }
+   }
+
+   // Clean up labels for closed positions
+   for(int i = ObjectsTotal(0, 0, OBJ_TEXT) - 1; i >= 0; i--)
+   {
+      string objName = ObjectName(0, i, 0, OBJ_TEXT);
+
+      // Check if it's an actual order label
+      if(StringFind(objName, "ActualEntryLabel_") == 0 || StringFind(objName, "ActualBELabel_") == 0)
+      {
+         // Extract ticket from name
+         string ticketStr = "";
+         if(StringFind(objName, "ActualEntryLabel_") == 0)
+            ticketStr = StringSubstr(objName, 17);  // Skip "ActualEntryLabel_"
+         else
+            ticketStr = StringSubstr(objName, 14);  // Skip "ActualBELabel_"
+
+         // If ticket not in existing list, delete the label
+         if(StringFind(existingTickets, ticketStr + ",") < 0)
+         {
+            ObjectDelete(0, objName);
+         }
+      }
+   }
+}
