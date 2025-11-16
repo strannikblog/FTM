@@ -168,6 +168,7 @@ input string inpTPExecuteSoundFile = "alert.wav";           // Sound File Name
 input group "===== Dynamic Risk Settings ====="
 input bool inpUseDynamicRisk = false;                        // Use RiskManager for risk%
 input bool inpUseDynamicAccountSize = false;                 // Use MT5 real-time equity
+input int inpRiskFileCacheSeconds = 300;                     // Risk File Cache Duration (seconds, 0=no cache)
 
 input group "===== Manual Risk Settings ====="
 input double inpManualRiskPercent = 0.25;                    // Manual fallback risk%
@@ -396,7 +397,6 @@ struct DynamicRiskData {
 DynamicRiskData g_DynamicRisk;
 string g_RiskFileName = "RiskManager\\RiskManager_CurrentRisk.csv";
 datetime g_LastRiskFileCheck = 0;
-int g_RiskFileCacheSeconds = 300;  // 5-minute cache
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                    |
@@ -2442,8 +2442,9 @@ void CalculateRiskManagementMode()
 //| Read Dynamic Risk Data from RiskManager CSV File                 |
 //+------------------------------------------------------------------+
 bool ReadRiskFromFile(DynamicRiskData &riskData) {
-    // Check cache - only read file every 5 minutes
-    if(TimeCurrent() - g_LastRiskFileCheck < g_RiskFileCacheSeconds &&
+    // Check cache - only read file based on user-configured cache duration
+    if(inpRiskFileCacheSeconds > 0 &&
+       TimeCurrent() - g_LastRiskFileCheck < inpRiskFileCacheSeconds &&
        riskData.fileReadSuccess) {
         return true;  // Use cached data
     }
@@ -5212,6 +5213,7 @@ void SaveToSetFile()
    // Account & Risk - Dynamic Risk Settings
    FileWriteString(fileHandle, "inpUseDynamicRisk=" + (inpUseDynamicRisk ? "1" : "0") + "||Y\n");
    FileWriteString(fileHandle, "inpUseDynamicAccountSize=" + (inpUseDynamicAccountSize ? "1" : "0") + "||Y\n");
+   FileWriteString(fileHandle, "inpRiskFileCacheSeconds=" + IntegerToString(inpRiskFileCacheSeconds) + "||Y\n");
    FileWriteString(fileHandle, "inpManualRiskPercent=" + DoubleToString(inpManualRiskPercent, 2) + "||Y\n");
    FileWriteString(fileHandle, "inpManualAccountSize=" + DoubleToString(inpManualAccountSize, 2) + "||Y\n");
    FileWriteString(fileHandle, "inpMarginPercent=" + DoubleToString(inpMarginPercent, 2) + "||Y\n");
