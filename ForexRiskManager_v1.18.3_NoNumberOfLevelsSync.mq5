@@ -2901,7 +2901,7 @@ void UpdatePanel()
    }
 
    // Risk Source Display
-   string riskSource = inpUseDynamicRisk ? "DYNAMIC" : "MANUAL";
+   string riskSource = inpUseDynamicRisk ? "Dynamic" : "Manual";
    color riskSourceColor = inpUseDynamicRisk ? (g_DynamicRisk.fileReadSuccess ? clrGreen : clrOrange) : clrDodgerBlue;
    double effectiveRisk = GetEffectiveRiskPercent();
    CreateLabel("RiskSourceLabel", "Risk Source:", x, y + (currentRow * rowHeight), inpPanelTextColor, inpFontSizeNormal, "Arial");
@@ -2909,7 +2909,7 @@ void UpdatePanel()
    currentRow++;
 
    // Account Size Source Display
-   string accountSource = inpUseDynamicAccountSize ? "EQUITY" : "MANUAL";
+   string accountSource = inpUseDynamicAccountSize ? "Equity" : "Manual";
    color accountSourceColor = inpUseDynamicAccountSize ? clrGreen : clrDodgerBlue;
    double effectiveAccount = GetEffectiveAccountSize();
    CreateLabel("AccountSourceLabel", "Account Source:", x, y + (currentRow * rowHeight), inpPanelTextColor, inpFontSizeNormal, "Arial");
